@@ -2,9 +2,12 @@
   "name": "aurx-backend",
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "start": "node api/chat.js"
+  },
   "dependencies": {
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^4.18.3"
   }
 }
