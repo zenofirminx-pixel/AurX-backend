@@ -1,1 +1,8 @@
-{}
+{
+  "example_user": {
+    "name": null,
+    "likes": [],
+    "language": null,
+    "notes": []
+  }
+}
