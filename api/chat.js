@@ -15,9 +15,9 @@ function setCors(res) {
 }
 
 // ---------------- OPENAI CALL ----------------
-async function callOpenAI(key, message) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+async function callOpenAI() {
+  return "TEST BACKEND OK";
+}
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
