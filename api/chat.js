@@ -60,7 +60,7 @@ export default async function handler(req, res) {
     // =========================
     // OPENAI CALL (FIXED + DEBUG)
     // =========================
-    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    const apiKey = process.env.OPENAI_API_KEY_1?.trim();
 
     if (!apiKey) {
       return res.status(500).json({
