@@ -4,4 +4,9 @@ export default function handler(req, res) {
     message: "API Vercel fonctionne parfaitement 🚀"
   });
 }
-console.log("KEYS:", KEYS);
+console.log("ENV KEYS RAW:", {
+  k1: process.env.OPENAI_API_KEY_1,
+  k2: process.env.OPENAI_API_KEY_2,
+  k3: process.env.OPENAI_API_KEY_3,
+  k4: process.env.OPENAI_API_KEY_4
+});
