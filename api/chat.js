@@ -1,8 +1,5 @@
 const KEYS = [
-  process.env.OPENAI_API_KEY_1,
-  process.env.OPENAI_API_KEY_2,
-  process.env.OPENAI_API_KEY_3,
-  process.env.OPENAI_API_KEY_4
+  process.env.OPENAI_API_KEY_1
 ].filter(Boolean);
 
 const MODEL = "gpt-4o-mini";
