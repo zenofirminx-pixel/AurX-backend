@@ -4,3 +4,4 @@ export default function handler(req, res) {
     message: "API Vercel fonctionne parfaitement 🚀"
   });
 }
+console.log("KEYS:", KEYS);
