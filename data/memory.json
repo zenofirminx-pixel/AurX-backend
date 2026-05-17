@@ -1,9 +1,1 @@
-{
-  "firmin": {
-    "name": "Firmin",
-    "country": "RDC",
-    "projects": ["FIRMINX", "AurX"],
-    "style": "direct, utile",
-    "notes": "Créateur d'une IA personnelle"
-  }
-}
+{}
