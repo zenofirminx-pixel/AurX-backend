@@ -1,8 +1,5 @@
 {
   "name": "aurx-backend",
   "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "dotenv": "^17.4.2"
-  }
+  "type": "module"
 }
