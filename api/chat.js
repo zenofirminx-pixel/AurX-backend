@@ -122,3 +122,4 @@ export default async function handler(req, res) {
     });
   }
 }
+console.log("API KEY:", apiKey?.slice(0, 8));
