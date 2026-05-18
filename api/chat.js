@@ -133,55 +133,38 @@ export default async function handler(req, res) {
     // =========================
     const apiKey = process.env.OPENAI_API_KEY_1;
 
-    if (!apiKey) {
-      return res.status(500).json({
-        error: "Missing OPENAI_API_KEY_1"
-      });
-    }
+if (!apiKey) {
+  return res.status(500).json({
+    error: "NO_API_KEY"
+  });
+}
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+let reply = "";
 
-    let response;
-    try {
-      response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-            "HTTP-Referer": "https://aur-x-pwa.vercel.app",
-            "X-Title": "AurX"
-          },
-          body: JSON.stringify({
-            model: "openai/gpt-4o-mini",
-            messages
-          }),
-          signal: controller.signal
-        }
-      );
-    } catch (err) {
-      clearTimeout(timeout);
-      return res.status(500).json({
-        error: "Fetch failed (OpenRouter unreachable)",
-        details: err.message
-      });
-    }
+try {
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-4o-mini",
+      messages: [
+        { role: "user", content: message }
+      ]
+    })
+  });
 
-    clearTimeout(timeout);
+  const data = await r.json();
+  reply = data?.choices?.[0]?.message?.content || "";
 
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      return res.status(500).json({
-        error: "OpenRouter error",
-        details: result
-      });
-    }
-
-    const reply =
-      result?.choices?.[0]?.message?.content || "";
+} catch (e) {
+  return res.status(500).json({
+    error: "FETCH_OPENROUTER_FAILED",
+    details: e.message
+  });
+}
 
     // =========================
     // SAVE CHAT
