@@ -181,8 +181,7 @@ export default async function handler(req, res) {
     } catch (e) {
       console.log("save chat error:", e);
     }
-    console.log("USERID:", userid);
-console.log("MEMORY FROM DB:", memory);
+    
     // =========================
     // RESPONSE
     // =========================
