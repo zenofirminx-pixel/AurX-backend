@@ -41,8 +41,21 @@ async function webSearch(query) {
       body: JSON.stringify({ query })
     });
 
-    return await res.json();
-  } catch {
+    // 🔥 sécurité 1 : vérifier réponse HTTP
+    if (!res.ok) {
+      console.log("WEB SEARCH HTTP ERROR:", res.status);
+      return null;
+    }
+
+    const data = await res.json();
+
+    // 🔥 sécurité 2 : validation
+    if (!data || typeof data !== "object") return null;
+
+    return data;
+
+  } catch (err) {
+    console.log("WEB SEARCH FAILED:", err.message);
     return null;
   }
 }
