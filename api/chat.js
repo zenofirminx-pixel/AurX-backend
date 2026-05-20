@@ -49,7 +49,7 @@ const message = body.message?.trim();
 const userId = body.aurx_user_id?.trim();
 
 if (!message || !userId) {
-  return res.status(400).json({ error: "Missing message or userId" });
+  return res.status(400).json({ error: "Missing message or aurx_user_id" });
 }
 
     // =========================
