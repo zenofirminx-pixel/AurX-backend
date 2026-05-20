@@ -170,13 +170,17 @@ export default async function handler(req, res) {
             : "";
 
           webContext = `
-🌐 WEB CONTEXT:
+████████████████████████████
+🌐 OFFICIAL WEB RESULTS (DO NOT IGNORE)
+████████████████████████████
 
-🔎 Google:
+🔎 GOOGLE RESULTS:
 ${googleText || "No results"}
 
-📚 Wikipedia:
+📚 WIKIPEDIA:
 ${wikiText || "No Wikipedia result"}
+
+████████████████████████████
 `;
         }
       }
