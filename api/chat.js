@@ -50,26 +50,48 @@ async function webSearch(query) {
 // =========================
 // 🧠 DECISION INTELLIGENTE
 // =========================
-function decideTool(message) {
+function needsWebSearch(message) {
   const msg = message.toLowerCase();
 
-  const webSignals = [
-    "actualité",
-    "news",
-    "prix",
-    "qui est",
-    "combien",
-    "2026",
-    "aujourd'hui",
-    "latest",
-    "recent"
+  // 🔥 PRIORITÉ FORTE (déclenchement direct)
+  const forceWeb = [
+    "search",
+    "recherche",
+    "cherche",
+    "trouve",
+    "find",
+    "lookup"
   ];
 
-  const useWeb = webSignals.some(w => msg.includes(w));
+  // 📊 questions d’info (web probable)
+  const infoSignals = [
+    "qui est",
+    "combien",
+    "prix",
+    "valeur",
+    "budget",
+    "actualité",
+    "news",
+    "latest",
+    "2026",
+    "aujourd'hui",
+    "actuel",
+    "maintenant"
+  ];
 
-  return {
-    useWeb
-  };
+  // ❓ structure de question naturelle
+  const isQuestion =
+    msg.includes("?") ||
+    msg.startsWith("qui") ||
+    msg.startsWith("what") ||
+    msg.startsWith("quel") ||
+    msg.startsWith("quelle");
+
+  // 🚀 règle finale
+  const hasForceWord = forceWeb.some(w => msg.includes(w));
+  const hasInfoWord = infoSignals.some(w => msg.includes(w));
+
+  return hasForceWord || hasInfoWord || isQuestion;
 }
 
 // =========================
