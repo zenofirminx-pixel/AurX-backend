@@ -40,15 +40,17 @@ export default async function handler(req, res) {
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
     const body = typeof req.body === "string"
-      ? JSON.parse(req.body)
-      : req.body || {};
+  ? JSON.parse(req.body)
+  : req.body || {};
 
-    const message = body.message?.trim();
-    const userId = body.userId?.trim();
+const message = body.message?.trim();
 
-    if (!message || !userId) {
-      return res.status(400).json({ error: "Missing message or userId" });
-    }
+// 🔥 ICI le fix
+const userId = body.aurx_user_id?.trim();
+
+if (!message || !userId) {
+  return res.status(400).json({ error: "Missing message or userId" });
+}
 
     // =========================
     // MEMORY LOAD
