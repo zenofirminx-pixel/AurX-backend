@@ -1,10 +1,13 @@
-let buildPrompt = () => [];
+let buildPrompt = null;
 
 try {
   const promptModule = await import("../lib/prompt.js");
-  buildPrompt = promptModule.buildPrompt || buildPrompt;
+
+  buildPrompt =
+    promptModule.buildPrompt ||
+    promptModule.default;
 } catch {
-  console.log("prompt.js missing");
+  buildPrompt = null;
 }
 
 export default async function handler(req, res) {
