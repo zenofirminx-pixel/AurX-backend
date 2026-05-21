@@ -6,14 +6,17 @@ const redis = new Redis({
 });
 
 export async function getMemory(userId) {
-  return (await redis.get(`memory:${userId}`)) || {};
+  const data = await redis.get(`memory:${userId}`);
+  return data || { chat: [] };
 }
 
 export async function updateMemory(userId, newData) {
-  const current = (await redis.get(`memory:${userId}`)) || {};
+  const current = (await redis.get(`memory:${userId}`)) || { chat: [] };
 
-  await redis.set(`memory:${userId}`, {
+  const updated = {
     ...current,
-    ...newData
-  });
+    ...newData,
+  };
+
+  await redis.set(`memory:${userId}`, updated);
 }
