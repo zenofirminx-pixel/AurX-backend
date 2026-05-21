@@ -48,29 +48,46 @@ export default async function handler(req, res) {
 
     // OPENROUTER CALL
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://aur-x-pwa.vercel.app",
-        "X-Title": "AurX"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages
-      })
-    });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${apiKey}`,
+    "HTTP-Referer": "https://aur-x-pwa.vercel.app",
+    "X-Title": "AurX"
+  },
+  body: JSON.stringify({
+    model: "openai/gpt-4o-mini",
+    messages
+  })
+});
 
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(500).json({ error: "OpenRouter error", details: data });
-    }
+const raw = await response.text();
 
-    const reply = data?.choices?.[0]?.message?.content || "";
-    return res.status(200).json({ reply });
-
-  } catch (err) {
-    console.log("FATAL ERROR:", err);
-    return res.status(500).json({ error: "Server crash", details: err.message });
-  }
+let data;
+try {
+  data = JSON.parse(raw);
+} catch (e) {
+  return res.status(500).json({
+    error: "Invalid JSON from OpenRouter",
+    raw
+  });
 }
+
+if (!response.ok) {
+  return res.status(500).json({
+    error: "OpenRouter failed",
+    status: response.status,
+    details: data
+  });
+}
+
+const reply = data?.choices?.[0]?.message?.content;
+
+if (!reply) {
+  return res.status(500).json({
+    error: "Empty response",
+    raw: data
+  });
+}
+
+return res.status(200).json({ reply });
