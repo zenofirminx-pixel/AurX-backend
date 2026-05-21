@@ -6,10 +6,14 @@ export default async function handler(req, res) {
     // =========================
     // IMPORT SAFE
     // =========================
-    try {
-      const promptModule = await import("../lib/prompt.js");
-      buildPrompt = promptModule.buildPrompt || buildPrompt;
-    } catch {}
+     let buildPrompt = null;
+
+try {
+  const promptModule = await import("../lib/prompt.js");
+  buildPrompt = promptModule.buildPrompt;
+} catch (err) {
+  console.error("PROMPT IMPORT FAILED:", err);
+}
 
     // =========================
     // CORS
