@@ -13,25 +13,45 @@ function setCors(res) {
 // FORMATTER
 // =========================
 function formatReply(text = "") {
+  let output = text.trim();
 
-  // espace avant listes numérotées
-  text = text.replace(/(\d+\.)/g, "\n$1");
+  // =========================
+  // 1. Nettoyage général
+  // =========================
+  output = output.replace(/\n{3,}/g, "\n\n");
 
-  // espace avant titres markdown
-  text = text.replace(/(#+)/g, "\n$1");
-
-  // transforme :
-  // 1. **Titre** -
-  // en format vertical
-  text = text.replace(
-    /(\d+\.)\s\*\*(.*?)\*\*\s-\s/g,
-    "$1 $2\n- "
+  // =========================
+  // 2. Supprimer phrases inutiles finales
+  // =========================
+  output = output.replace(
+    /Si tu as d'autres questions.*$/gi,
+    ""
   );
 
-  // espace entre sections
-  text = text.replace(/\n{3,}/g, "\n\n");
+  // =========================
+  // 3. CAS 1 : LISTES NUMÉROTÉES
+  // =========================
+  output = output.replace(/(\d+\.\s)/g, "\n$1");
 
-  return text.trim();
+  // =========================
+  // 4. CAS 2 : TITRES
+  // =========================
+  output = output.replace(/(#+\s)/g, "\n$1");
+
+  // =========================
+  // 5. CAS 3 : FRASES TROP COLLÉES
+  // =========================
+  output = output
+    .replace(/\. ([A-ZÀ-Ÿ])/g, ".\n\n$1");
+
+  // =========================
+  // 6. CAS 4 : NETTOYAGE FINAL
+  // =========================
+  output = output
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return output;
 }
 
 // =========================
