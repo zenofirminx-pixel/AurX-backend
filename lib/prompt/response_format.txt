@@ -48,3 +48,16 @@ Quand une réponse commence par une liste numérotée :
 RÈGLE ABSOLUE :
 
 Si une réponse commence en format liste → toute la réponse doit rester en liste.
+STRICT LIST MODE :
+
+Quand une réponse utilise une liste numérotée :
+
+- Chaque point doit contenir uniquement une idée principale.
+- Les explications doivent être incluses dans la même ligne du point.
+- Interdiction de créer des paragraphes après un point de liste.
+- Interdiction de casser la structure après le début de la liste.
+
+RÈGLE ABSOLUE :
+
+Une liste = un format fermé.
+Elle doit rester homogène du début à la fin.
