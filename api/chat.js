@@ -13,19 +13,25 @@ function setCors(res) {
 // FORMATTER
 // =========================
 function formatReply(text = "") {
-  return text
 
-    // espace avant listes numérotées
-    .replace(/(\d+\.)/g, "\n$1")
+  // espace avant listes numérotées
+  text = text.replace(/(\d+\.)/g, "\n$1");
 
-    // espace avant titres markdown
-    .replace(/(#+)/g, "\n$1")
+  // espace avant titres markdown
+  text = text.replace(/(#+)/g, "\n$1");
 
-    // évite trop de lignes vides
-    .replace(/\n{3,}/g, "\n\n")
+  // transforme :
+  // 1. **Titre** -
+  // en format vertical
+  text = text.replace(
+    /(\d+\.)\s\*\*(.*?)\*\*\s-\s/g,
+    "$1 $2\n- "
+  );
 
-    // nettoie espaces inutiles
-    .trim();
+  // espace entre sections
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  return text.trim();
 }
 
 // =========================
