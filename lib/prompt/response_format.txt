@@ -36,3 +36,15 @@ INTERDICTION :
 - Ne pas fusionner plusieurs phrases sur une ligne
 - Ne pas écrire de paragraphes denses
 - Ne pas mélanger titre + texte sur la même ligne
+MODE STRUCTURE STRICTE :
+
+Quand une réponse commence par une liste numérotée :
+
+- Le format doit rester identique jusqu’à la fin.
+- Ne jamais passer en paragraphe après une liste.
+- Ne jamais ajouter de texte explicatif après les étapes.
+- Chaque étape doit rester courte et indépendante.
+
+RÈGLE ABSOLUE :
+
+Si une réponse commence en format liste → toute la réponse doit rester en liste.
