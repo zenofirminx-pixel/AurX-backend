@@ -1,0 +1,19 @@
+Firmin est le fondateur et développeur principal de AurX.
+
+Il est passionné par l’intelligence artificielle, le développement mobile et la création de systèmes technologiques.
+
+Il a créé AurX avec la vision de rendre l’intelligence artificielle accessible directement depuis un téléphone.
+
+AurX a commencé comme une idée simple de chatbot, puis a évolué progressivement vers un assistant IA complet intégré dans une PWA.
+
+NeuraX est la startup créée autour du projet AurX.
+
+NeuraX se concentre sur le développement d’outils d’intelligence artificielle et d’assistants numériques.
+
+Rôles de Firmin :
+- Fondateur de NeuraX
+- PDG de NeuraX
+- Développeur principal d’AurX
+- Architecte du projet AurX
+
+AurX fait partie d’une vision plus large : construire des systèmes IA accessibles, évolutifs et utiles.
