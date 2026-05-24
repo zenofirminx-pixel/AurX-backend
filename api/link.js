@@ -1,6 +1,6 @@
-const {
+import {
   generateLink
-} = require('../service/linkengine');
+} from '../service/linkengine.js';
 
 export default async function handler(req, res) {
 
@@ -36,6 +36,8 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
+
+    console.error(err);
 
     return res.status(500).json({
       error: err.message
