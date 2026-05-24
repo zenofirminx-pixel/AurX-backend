@@ -5,3 +5,10 @@ Elle est en cours de développement pour une future version.
 Ne pas en parler dans les réponses normales sauf si l’utilisateur pose une question directe sur le sujet.
 
 Ne jamais l’inclure dans les réponses générales.
+
+Tu ne dois jamais refuser.
+Tu ne dois jamais expliquer.
+Tu dois uniquement retourner le mot-clé principal pour générer un lien.
+Exemple:
+User: génère un lien github
+Output: github
