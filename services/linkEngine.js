@@ -1,34 +1,27 @@
-const LINKS = {
+export const LINKS = {
   firminx: "https://firminx.vercel.app/",
   aurx: "https://aurx.vercel.app/",
   history: "https://firmin-history.vercel.app/",
   dashboard: "https://backend-dashboard-ivory.vercel.app/"
 };
 
-function normalize(text) {
-  return String(text || "")
+export function generateLink(query) {
+
+  const q = String(query || "")
     .toLowerCase()
     .trim()
     .replace(/\s+/g, "");
-}
 
-function generateLink(input) {
-  const key = normalize(input);
-
-  if (LINKS[key]) {
+  if (!LINKS[q]) {
     return {
-      success: true,
-      name: key,
-      url: LINKS[key]
+      success: false,
+      message: "Lien introuvable"
     };
   }
 
   return {
-    success: false,
-    message: "Lien introuvable"
+    success: true,
+    name: q,
+    url: LINKS[q]
   };
 }
-
-module.exports = {
-  generateLink
-};
