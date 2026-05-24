@@ -8,16 +8,20 @@ const LINKS = {
 
 export function generateLink(query) {
 
-  const q = String(query || "")
+  const text = String(query || "")
     .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "");
+    .trim();
 
-  const url = LINKS[q];
+  // Cherche si un mot-clé existe dans la phrase
+  for (const key in LINKS) {
 
-  if (!url) {
-    return "❌ Lien introuvable";
+    if (text.includes(key)) {
+
+      return `${key} 🔗 Lien généré : ${LINKS[key]}`;
+
+    }
+
   }
 
-  return `${q} 🔗 Lien généré : ${url}`;
+  return "❌ Lien introuvable";
 }
