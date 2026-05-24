@@ -1,4 +1,5 @@
-export const LINKS = {
+const LINKS = {
+  firmin: "https://firminx.vercel.app/",
   firminx: "https://firminx.vercel.app/",
   aurx: "https://aurx.vercel.app/",
   history: "https://firmin-history.vercel.app/",
@@ -12,16 +13,11 @@ export function generateLink(query) {
     .trim()
     .replace(/\s+/g, "");
 
-  if (!LINKS[q]) {
-    return {
-      success: false,
-      message: "Lien introuvable"
-    };
+  const url = LINKS[q];
+
+  if (!url) {
+    return "❌ Lien introuvable";
   }
 
-  return {
-    success: true,
-    name: q,
-    url: LINKS[q]
-  };
+  return `${q} 🔗 Lien généré : ${url}`;
 }
