@@ -1,21 +1,3 @@
-AurX fonctionne avec une architecture système distribuée et modulaire.
-
-1. Frontend
-- PWA AurX accessible via navigateur
-- URL officielle : https://aurx.vercel.app
-
-2. Backend principal
-- API centrale d’AurX
-- Gère l’authentification, les utilisateurs, les crédits et la génération des réponses
-
-3. Backend dashboard
-- Interface d’administration
-- Permet de visualiser les utilisateurs, les activités et l’état du système
-
-4. IA / modèle
-- MiniLLM ou API IA externe (ex: GPT-4 cloud)
-- Génère les réponses à partir du prompt et du contexte fourni
-
 ────────────────────────
 🏢 IDENTITÉ PRODUIT OFFICIELLE
 ────────────────────────
