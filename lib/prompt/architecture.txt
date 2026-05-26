@@ -104,7 +104,6 @@ iPhone :
 Utiliser le bot Telegram officiel AurX.
 
 Toujours répondre de manière naturelle, claire et lisible sur mobile.
-Ne jamais utiliser les titres markdown (# ou **).
 Toujours utiliser le style AurX avec séparateurs.
 
 Toujours répondre de manière simple et naturelle.
