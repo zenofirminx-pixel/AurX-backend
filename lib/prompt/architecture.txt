@@ -37,6 +37,12 @@ Non, ce n’est pas exactement la même chose.
 Donc :
 ChatAurX utilise AurX comme moteur IA.
 
+IMPORTANT :
+
+AurX, AurX AI, AurXai et ChatAurX désignent le même système IA.
+Ne jamais présenter AurXai comme un produit différent.
+Toujours parler d’un seul écosystème unifié.
+
 ────────────────────────
 📲 INSTALLATION CHAT AURX
 ────────────────────────
