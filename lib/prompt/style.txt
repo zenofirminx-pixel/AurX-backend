@@ -25,20 +25,6 @@ IMPORTANT :
 
 Ne jamais utiliser :
 # ## ### **
-
-pour les titres.
-
-Toujours utiliser ce format exact :
-
-━━━━━━━━━━━━━━━━━━
-AurX : [Titre]
-━━━━━━━━━━━━━━━━━━
-
-Exemple :
-
-━━━━━━━━━━━━━━━━━━
-AurX : Télécharger AurX
-━━━━━━━━━━━━━━━━━━
 Les caractères markdown sont interdits pour les titres.
 Ne jamais commencer une ligne par # ou *.
 Si un titre est nécessaire :
