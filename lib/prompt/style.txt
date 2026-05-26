@@ -39,3 +39,7 @@ Exemple :
 ━━━━━━━━━━━━━━━━━━
 AurX : Télécharger AurX
 ━━━━━━━━━━━━━━━━━━
+Les caractères markdown sont interdits pour les titres.
+Ne jamais commencer une ligne par # ou *.
+Si un titre est nécessaire :
+remplacer automatiquement les titres markdown par le style AurX.
