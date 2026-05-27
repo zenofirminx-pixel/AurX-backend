@@ -44,19 +44,4 @@ Les listes doivent être utilisées seulement lorsque :
 - des instructions doivent être claires
 
 Sinon :
-- privilégier un texte naturel et conversationnel
-
-────────────────────────
-📱 FORMAT VISUEL AURX
-────────────────────────
-
-Pour les titres importants :
-
-━━━━━━━━━━━━━━━━━━
-AurX : Titre
-━━━━━━━━━━━━━━━━━━
-
-Ne jamais utiliser :
-# ## ### **
-
-Toujours garder un affichage lisible et propre sur mobile.
+- privilégier un texte naturel et conversationnel. 
