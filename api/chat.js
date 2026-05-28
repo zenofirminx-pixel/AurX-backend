@@ -1,3 +1,4 @@
+import db from "../lib/firebase.js";
 import { buildPrompt } from "../lib/buildPrompt.js";
 
 // =========================
@@ -53,21 +54,43 @@ export default async function handler(req, res) {
     } catch {}
 
     const message = body.message?.trim();
+    const userId = body.userId || "anonymous";
 
     if (!message) {
       return res.status(400).json({ error: "Missing message" });
     }
 
     // =========================
+    // FIREBASE USER + MEMORY
+    // =========================
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+
+    let memory = [];
+
+    if (userDoc.exists) {
+      memory = userDoc.data().memory || [];
+    } else {
+      await userRef.set({
+        userId,
+        createdAt: Date.now(),
+        memory: [],
+        platforms: []
+      });
+    }
+
+    const memoryContext = memory.length
+      ? memory.join("\n")
+      : "Aucune mémoire pour cet utilisateur.";
+
+    // =========================
     // PROMPT
     // =========================
     let messages = buildPrompt(message);
 
-    const memoryContext = "";
-
     if (Array.isArray(messages) && messages.length >= 2) {
       messages[1].content = `
-[MEMORY]
+[MEMORY AURX]
 ${memoryContext}
 
 ${messages[1].content}
@@ -115,22 +138,27 @@ ${messages[1].content}
     }
 
     // =========================
-    // RAW REPLY
+    // RESPONSE TEXT
     // =========================
     const rawReply =
       data?.choices?.[0]?.message?.content ||
       "Aucune réponse.";
 
-    // =========================
-    // FORMAT REPLY
-    // =========================
     const finalReply = formatReply(rawReply);
 
     // =========================
-    // RESPONSE (NO LINK SYSTEM)
+    // SAVE MEMORY (LAST 10 MESSAGES)
+    // =========================
+    await userRef.update({
+      memory: [...memory.slice(-10), message]
+    });
+
+    // =========================
+    // RESPONSE
     // =========================
     return res.status(200).json({
-      reply: finalReply
+      reply: finalReply,
+      memoryUpdated: true
     });
 
   } catch (err) {
