@@ -10,22 +10,6 @@ res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
 // =========================
-// FORMATTER
-// =========================
-function formatReply(text = "") {
-let output = text.trim();
-
-output = output.replace(/\n{3,}/g, "\n\n");
-output = output.replace(/Si tu as d'autres questions.*$/gi, "");
-output = output.replace(/(\d+.\s)/g, "\n$1");
-output = output.replace(/(#+\s)/g, "\n$1");
-output = output.replace(/. ([A-ZÀ-Ÿ])/g, ".\n\n$1");
-output = output.replace(/\n{3,}/g, "\n\n").trim();
-
-return output;
-}
-
-// =========================
 // HANDLER
 // =========================
 export default async function handler(req, res) {
