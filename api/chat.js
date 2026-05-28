@@ -50,7 +50,7 @@ export default async function handler(req, res) {
     // =========================
     // API KEY
     // =========================
-    const apiKey = process.env.OPENAI_API_KEY_1;
+    const apiKey = process.env.OPENAI_API_KEY_2;
 
     if (!apiKey) {
       return res.status(500).json({
