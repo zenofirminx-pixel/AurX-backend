@@ -82,7 +82,7 @@ export default async function handler(req, res) {
     const memoryContext = memory.length
       ? memory.join("\n")
       : "Aucune mémoire pour cet utilisateur.";
-
+       console.log("DB:", db);
     // =========================
     // PROMPT
     // =========================
