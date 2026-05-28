@@ -31,15 +31,23 @@ function formatReply(text = "") {
 // =========================
 export default async function handler(req, res) {
   try {
-    setCors(res);
+    console.log("STEP 1 OK");
 
-    if (req.method === "OPTIONS") {
-      return res.status(200).end();
-    }
+    const body = req.body || {};
+    console.log("STEP 2 OK", body);
 
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Method not allowed" });
-    }
+    return res.status(200).json({
+      ok: true,
+      step: "all good"
+    });
+
+  } catch (err) {
+    console.log("CRASH:", err);
+    return res.status(500).json({
+      error: err.message
+    });
+  }
+}
 
     // =========================
     // BODY SAFE PARSE
@@ -82,7 +90,7 @@ export default async function handler(req, res) {
     const memoryContext = memory.length
       ? memory.join("\n")
       : "Aucune mémoire pour cet utilisateur.";
-       console.log("DB:", db);
+       
     // =========================
     // PROMPT
     // =========================
