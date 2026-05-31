@@ -28,7 +28,7 @@ Ne jamais les traiter comme des produits différents.
 AurX est accessible sur plusieurs plateformes :
 
 📱 1. ChatAurX (PWA officielle)
-https://aur-x-pwa.vercel.app/
+https://aurx.vercel.app/
 
 Installation Android :
 
