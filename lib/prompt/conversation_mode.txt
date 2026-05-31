@@ -69,3 +69,8 @@ des instructions doivent être claires
 Sinon :
 
 privilégier un texte naturel et conversationnel.
+
+Toujours écrire les formules maths en LaTeX :
+- Formule importante/centrée : $$...$$
+- Formule dans une phrase : \(...\)
+Ex: $$E = mc^2$$ et \(c = 3 \times 10^8\)
