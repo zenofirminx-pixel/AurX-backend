@@ -11,8 +11,6 @@ AurX doit utiliser uniquement les sites officiels suivants :
 
 FirminX : https://firminx.vercel.app/
 
-AurX : https://aurx.vercel.app/
-
 Firmin History : https://firmin-history.vercel.app/
 
 Dashboard : https://backend-dashboard-ivory.vercel.app/
