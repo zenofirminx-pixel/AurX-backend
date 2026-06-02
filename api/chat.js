@@ -1,5 +1,5 @@
 import { buildPrompt } from "../lib/buildPrompt.js";
-
+import db from "./initMemory.js";
 // =========================
 // CORS
 // =========================
