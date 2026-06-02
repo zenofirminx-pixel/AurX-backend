@@ -38,9 +38,12 @@ export default async function handler(req, res) {
           : req.body || {};  
     } catch {}  
 
-    const message = body.message?.trim();  
-    const userId = body.userId || "test_user";  
+    const message = body.message?.trim();
+const userId = body.userId || "test_user";
 
+// 🧠 MEMORY LAYER (AJOUT)
+const memories = extractMemory(message);
+await saveMemory(db, userId, memories);
     if (!message) {  
       return res.status(400).json({ error: "Missing message" });  
     }  
