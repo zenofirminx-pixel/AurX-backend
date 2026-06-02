@@ -1,5 +1,8 @@
 {
   "name": "aurx-backend",
   "version": "1.0.0",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "firebase-admin": "^13.5.0"
+  }
 }
