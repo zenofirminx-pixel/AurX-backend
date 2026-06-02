@@ -53,8 +53,8 @@ export default async function handler(req, res) {
       .collection("users")  
       .doc(userId)  
       .collection("messages")  
-      .orderBy("timestamp", "asc")  
-      .limit(20)  
+      .orderBy("timestamp", "desc")
+      .limit(100)
       .get();  
 
     const history = snapshot.docs.map(doc => {  
