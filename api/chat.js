@@ -83,11 +83,11 @@ snapshot.forEach(doc => {
     // =========================  
     // API KEY  
     // =========================  
-    const apiKey = process.env.OPENAI_API_KEY_2;  
+    const apiKey = process.env.OPENAI_API_KEY_5;  
 
     if (!apiKey) {  
       return res.status(500).json({  
-        error: "Missing OPENAI_API_KEY_2"  
+        error: "Missing OPENAI_API_KEY_5"  
       });  
     }  
 
