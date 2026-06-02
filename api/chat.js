@@ -57,14 +57,16 @@ export default async function handler(req, res) {
       .limit(100)
       .get();  
 
-    const history = snapshot.docs.map(doc => {  
-      const data = doc.data();  
+    const history = [];
 
-      return {  
-        role: data.role,  
-        content: data.text  
-      };  
-    });  
+snapshot.forEach(doc => {
+  const data = doc.data();
+
+  history.unshift({
+    role: data.role,
+    content: data.text
+  });
+});
 
     // =========================  
     // PROMPT  
