@@ -44,9 +44,34 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // PROMPT (ONLY BUILD PROMPT)
-    // =========================
-    const messages = buildPrompt(message);
+// MEMORY
+// =========================
+const snapshot = await db
+  .collection("users")
+  .doc(userId)
+  .collection("messages")
+  .orderBy("timestamp", "desc")
+  .limit(10)
+  .get();
+
+const history = [];
+
+snapshot.forEach(doc => {
+  const data = doc.data();
+
+  history.unshift({
+    role: data.role,
+    content: data.text
+  });
+});
+
+// =========================
+// PROMPT
+// =========================
+const messages = [
+  ...history,
+  ...buildPrompt(message)
+];
 
     // =========================
     // API KEY
