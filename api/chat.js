@@ -105,22 +105,23 @@ snapshot.forEach(doc => {
     // =========================  
     // OPENROUTER REQUEST  
     // =========================  
-    const response = await fetch(  
-      "https://openrouter.ai/api/v1/chat/completions",  
-      {  
-        method: "POST",  
-        headers: {  
-          "Content-Type": "application/json",  
-          Authorization: `Bearer ${apiKey}`,  
-          "HTTP-Referer": "https://aur-x-pwa.vercel.app",  
-          "X-Title": "AurX"  
-        },  
-        body: JSON.stringify({  
-          model: "openai/gpt-4o-mini",  
-          messages  
-        })  
-      }  
-    );  
+    const response = await fetch(
+  "https://openrouter.ai/api/v1/chat/completions",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://aur-x-pwa.vercel.app",
+      "X-Title": "AurX"
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-4o-mini",
+      messages,
+      stream: true   // 🔥 IMPORTANT
+    })
+  }
+);
 
     const data = await response.json().catch(() => ({}));  
 
