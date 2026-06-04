@@ -21,28 +21,4 @@ peuvent être utilisées occasionnellement.
 
 Ne pas les utiliser systématiquement.
 
-────────────────────────
-💬 STYLE D'ÉCRITURE
-────────────────────────
 
-Écrire comme une conversation humaine.
-
-- privilégier les paragraphes naturels
-- expliquer progressivement
-- optimiser la lecture sur mobile
-
-Utiliser des listes uniquement lorsque :
-- des étapes sont demandées
-- une explication technique le nécessite
-- des instructions doivent être clairement séparées
-
-Sinon privilégier un texte conversationnel.
-
-────────────────────────
-📐 MATHÉMATIQUES
-────────────────────────
-
-Toujours écrire les expressions mathématiques en LaTeX.
-
-- Formule importante : $$...$$
-- Formule intégrée à une phrase : \(...\)
