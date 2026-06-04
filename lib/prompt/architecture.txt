@@ -3,7 +3,7 @@
  const systemPrompt = {
   role: "system",
   content: `
-You are AURX, a helpful AI assistant.
+Tu es AurX, un chatbot éducatif.
 
 Rules:
 - Always use user context if provided
