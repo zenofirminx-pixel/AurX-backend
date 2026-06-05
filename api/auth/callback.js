@@ -1,11 +1,17 @@
-import admin from "firebase-admin";
-import db from "../../lib/db.js";
+import db from "../lib/db.js";
+import crypto from "crypto";
 
 export default async function handler(req, res) {
-  const { code } = req.query;
-
   try {
-    // ⚠️ échange code Google
+    const code = req.query.code;
+
+    if (!code) {
+      return res.status(400).json({ error: "Missing code" });
+    }
+
+    // =========================
+    // EXCHANGE CODE → TOKEN
+    // =========================
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -20,45 +26,79 @@ export default async function handler(req, res) {
 
     const tokenData = await tokenRes.json();
 
-    const accessToken = tokenData.access_token;
+    if (!tokenData.access_token) {
+      return res.status(400).json({
+        error: "Token exchange failed",
+        details: tokenData
+      });
+    }
 
-    const userInfoRes = await fetch(
+    // =========================
+    // GET USER INFO
+    // =========================
+    const userRes = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
       {
         headers: {
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${tokenData.access_token}`
         }
       }
     );
 
-    const profile = await userInfoRes.json();
+    const googleUser = await userRes.json();
 
-    // créer user Firebase si nouveau
-    let user;
+    // =========================
+    // FIND OR CREATE USER
+    // =========================
+    const usersRef = db.collection("users");
+    const snapshot = await usersRef.where("email", "==", googleUser.email).limit(1).get();
 
-    try {
-      user = await admin.auth().getUserByEmail(profile.email);
-    } catch {
-      user = await admin.auth().createUser({
-        email: profile.email,
-        displayName: profile.name
+    let userId;
+
+    if (snapshot.empty) {
+      userId = crypto.randomUUID();
+
+      await usersRef.doc(userId).set({
+        email: googleUser.email,
+        googleId: googleUser.id,
+        createdAt: Date.now(),
+        profile: {
+          name: googleUser.name,
+          picture: googleUser.picture
+        },
+        memory: {
+          facts: [],
+          interactions: 0
+        }
       });
+    } else {
+      userId = snapshot.docs[0].id;
     }
 
-    await db.collection("users").doc(user.uid).set(
-      {
-        profile: {
-          email: profile.email,
-          name: profile.name,
-          photo: profile.picture
-        },
-        provider: "google"
-      },
-      { merge: true }
+    // =========================
+    // SESSION
+    // =========================
+    const sessionToken = crypto.randomBytes(32).toString("hex");
+
+    await db.collection("sessions").doc(sessionToken).set({
+      userId,
+      createdAt: Date.now()
+    });
+
+    res.setHeader(
+      "Set-Cookie",
+      `session=${sessionToken}; HttpOnly; Path=/; SameSite=None; Secure; Max-Age=604800`
     );
 
-    res.redirect("https://aurx.vercel.app"); // retour front
+    // =========================
+    // REDIRECT FRONT
+    // =========================
+    return res.redirect("https://aurx.vercel.app");
+
   } catch (err) {
-    res.status(500).send(err.message);
+    return res.status(500).json({
+      error: "Google OAuth failed",
+      details: err.message
+    });
   }
 }
