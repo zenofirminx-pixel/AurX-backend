@@ -19,29 +19,28 @@ export default async function handler(req, res) {
   try {
     setCors(res);
 
-    // OPTIONS (CORS preflight)
     if (req.method === "OPTIONS") {
       return res.status(200).end();
     }
 
-    // Only POST allowed
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
     // =========================
-    // USER ID SIMPLE
+    // USER ID
     // =========================
     const userId = "guest_" + (req.headers["x-forwarded-for"] || "local");
 
     // =========================
-    // BODY SAFE PARSE
+    // BODY
     // =========================
     let body = {};
     try {
-      body = typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body || {};
+      body =
+        typeof req.body === "string"
+          ? JSON.parse(req.body)
+          : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -53,7 +52,7 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY SYSTEM
+    // MEMORY
     // =========================
     const memories = extractMemory(message);
     await saveMemory(db, userId, memories);
@@ -119,15 +118,16 @@ export default async function handler(req, res) {
       }
     );
 
-    // =========================
-    // SAFE JSON PARSE
-    // =========================
-    let data = {};
+    // ❌ IMPORTANT: vérifier réponse brute
+    const text = await response.text();
+
+    let data;
     try {
-      data = await response.json();
-    } catch (e) {
+      data = JSON.parse(text);
+    } catch {
       return res.status(500).json({
-        error: "Invalid API response"
+        error: "Invalid JSON from OpenRouter",
+        raw: text
       });
     }
 
@@ -144,7 +144,7 @@ export default async function handler(req, res) {
 
     const replyTime = Date.now();
 
-    // SAVE ASSISTANT MESSAGE
+    // SAVE ASSISTANT
     await db
       .collection("users")
       .doc(userId)
@@ -155,9 +155,6 @@ export default async function handler(req, res) {
         timestamp: replyTime
       });
 
-    // =========================
-    // FINAL RESPONSE
-    // =========================
     return res.status(200).json({
       reply,
       timestamp: replyTime
