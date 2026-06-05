@@ -2,165 +2,200 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
+import { requireAuth } from "../lib/authGuard.js";
+
 // =========================
 // CORS
 // =========================
 function setCors(res) {
-res.setHeader("Access-Control-Allow-Origin", "*");
-res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
 // =========================
 // HANDLER
 // =========================
 export default async function handler(req, res) {
-try {
-setCors(res);
+  try {
+    setCors(res);
 
-if (req.method === "OPTIONS") {    
-  return res.status(200).end();    
-}    
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
 
-if (req.method !== "POST") {    
-  return res.status(405).json({ error: "Method not allowed" });    
-}    
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
 
-// =========================    
-// SAFE BODY PARSE    
-// =========================    
-let body = {};    
+    // =========================
+    // AUTH SECURITY
+    // =========================
+    const auth = await requireAuth(req);
 
-try {    
-  body =    
-    typeof req.body === "string"    
-      ? JSON.parse(req.body)    
-      : req.body || {};    
-} catch {}    
+    if (!auth) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
-const message = body.message?.trim();
+    const userId = auth.userId;
 
-const userId = body.userId || "test_user";
+    // =========================
+    // SAFE BODY PARSE
+    // =========================
+    let body = {};
 
-// 🧠 MEMORY LAYER (AJOUT)
-const memories = extractMemory(message);
-await saveMemory(db, userId, memories);
-if (!message) {
-return res.status(400).json({ error: "Missing message" });
-}
+    try {
+      body =
+        typeof req.body === "string"
+          ? JSON.parse(req.body)
+          : req.body || {};
+    } catch {}
 
-const now = Date.now(); // ✅ TIME UNIQUE POUR CE MESSAGE    
+    const message = body.message?.trim();
 
-// =========================    
-// MEMORY    
-// =========================    
-const snapshot = await db    
-  .collection("users")    
-  .doc(userId)    
-  .collection("messages")    
-  .orderBy("timestamp", "desc")  
-  .limit(100)  
-  .get();    
+    if (!message) {
+      return res.status(400).json({ error: "Missing message" });
+    }
 
-const history = [];
+    const now = Date.now();
 
-snapshot.forEach(doc => {
-const data = doc.data();
+    // =========================
+    // MEMORY SYSTEM
+    // =========================
+    const memories = extractMemory(message);
+    await saveMemory(db, userId, memories);
 
-history.unshift({
-role: data.role,
-content: data.text
-});
-});
+    const snapshot = await db
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .orderBy("timestamp", "desc")
+      .limit(100)
+      .get();
 
-// =========================    
-// PROMPT    
-// =========================    
-const messages = [    
-  ...history,    
-  ...buildPrompt(message)    
-];    
+    const history = [];
 
-// =========================    
-// API KEY    
-// =========================    
-const apiKey = process.env.OPENAI_API_KEY_5;    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      history.unshift({
+        role: data.role,
+        content: data.text
+      });
+    });
 
-if (!apiKey) {    
-  return res.status(500).json({    
-    error: "Missing OPENAI_API_KEY_5"    
-  });    
-}    
+    const messages = [
+      ...history,
+      ...buildPrompt(message)
+    ];
 
-// SAVE USER MESSAGE    
-await db    
-  .collection("users")    
-  .doc(userId)    
-  .collection("messages")    
-  .add({    
-    role: "user",    
-    text: message,    
-    timestamp: now    
-  });    
+    const apiKey = process.env.OPENAI_API_KEY_5;
 
-// =========================    
-// OPENROUTER REQUEST    
-// =========================    
-const response = await fetch(    
-  "https://openrouter.ai/api/v1/chat/completions",    
-  {    
-    method: "POST",    
-    headers: {    
-      "Content-Type": "application/json",    
-      Authorization: `Bearer ${apiKey}`,    
-      "HTTP-Referer": "https://aur-x-pwa.vercel.app",    
-      "X-Title": "AurX"    
-    },    
-    body: JSON.stringify({    
-      model: "openai/gpt-4o-mini",    
-      messages    
-    })    
-  }    
-);    
+    if (!apiKey) {
+      return res.status(500).json({
+        error: "Missing OPENAI_API_KEY_5"
+      });
+    }
 
-const data = await response.json().catch(() => ({}));    
+    // SAVE USER MESSAGE
+    await db
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
+        role: "user",
+        text: message,
+        timestamp: now
+      });
 
-if (!response.ok) {    
-  return res.status(500).json({    
-    error: "OpenRouter error",    
-    details: data    
-  });    
-}    
+    // =========================
+    // STREAMING RESPONSE (OPENROUTER)
+    // =========================
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://aur-x-pwa.vercel.app",
+          "X-Title": "AurX"
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages,
+          stream: true
+        })
+      }
+    );
 
-const reply =    
-  data?.choices?.[0]?.message?.content ||    
-  "Aucune réponse.";    
+    if (!response.ok || !response.body) {
+      const err = await response.json().catch(() => ({}));
+      return res.status(500).json({
+        error: "OpenRouter error",
+        details: err
+      });
+    }
 
-const replyTime = Date.now(); // ✅ TIME ASSISTANT    
+    // =========================
+    // SSE HEADERS (STREAM)
+    // =========================
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
 
-// SAVE ASSISTANT MESSAGE    
-await db    
-  .collection("users")    
-  .doc(userId)    
-  .collection("messages")    
-  .add({    
-    role: "assistant",    
-    text: reply,    
-    timestamp: replyTime    
-  });    
+    let fullReply = "";
 
-// =========================    
-// RESPONSE (FIX IMPORTANT)    
-// =========================    
-return res.status(200).json({    
-  reply,    
-  timestamp: replyTime // ✅ AJOUT POUR LE FRONT    
-});
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
 
-} catch (err) {
-return res.status(500).json({
-error: "Server crash",
-details: err.message
-});
-}
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+
+      const lines = chunk.split("\n");
+
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+
+        const jsonStr = line.replace("data: ", "").trim();
+        if (jsonStr === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const token = parsed?.choices?.[0]?.delta?.content;
+
+          if (token) {
+            fullReply += token;
+
+            res.write(`data: ${JSON.stringify({ token })}\n\n`);
+          }
+        } catch {}
+      }
+    }
+
+    const replyTime = Date.now();
+
+    // SAVE ASSISTANT MESSAGE
+    await db
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
+        role: "assistant",
+        text: fullReply,
+        timestamp: replyTime
+      });
+
+    res.write(`data: ${JSON.stringify({ done: true, timestamp: replyTime })}\n\n`);
+    res.end();
+
+  } catch (err) {
+    return res.status(500).json({
+      error: "Server crash",
+      details: err.message
+    });
+  }
 }
