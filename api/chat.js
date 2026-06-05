@@ -19,19 +19,29 @@ export default async function handler(req, res) {
   try {
     setCors(res);
 
+    // OPTIONS (CORS preflight)
     if (req.method === "OPTIONS") {
       return res.status(200).end();
     }
 
+    // Only POST allowed
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
+    // =========================
+    // USER ID SIMPLE
+    // =========================
     const userId = "guest_" + (req.headers["x-forwarded-for"] || "local");
 
+    // =========================
+    // BODY SAFE PARSE
+    // =========================
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -43,7 +53,7 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY
+    // MEMORY SYSTEM
     // =========================
     const memories = extractMemory(message);
     await saveMemory(db, userId, memories);
@@ -57,6 +67,7 @@ export default async function handler(req, res) {
       .get();
 
     const history = [];
+
     snapshot.forEach(doc => {
       const data = doc.data();
       history.unshift({
@@ -88,7 +99,7 @@ export default async function handler(req, res) {
       });
 
     // =========================
-    // OPENROUTER (NON STREAM)
+    // OPENROUTER (NO STREAM)
     // =========================
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
@@ -108,7 +119,17 @@ export default async function handler(req, res) {
       }
     );
 
-    const data = await response.json().catch(() => ({}));
+    // =========================
+    // SAFE JSON PARSE
+    // =========================
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (e) {
+      return res.status(500).json({
+        error: "Invalid API response"
+      });
+    }
 
     if (!response.ok) {
       return res.status(500).json({
@@ -118,11 +139,12 @@ export default async function handler(req, res) {
     }
 
     const reply =
-      data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
+      data?.choices?.[0]?.message?.content ||
+      "Je n’ai pas pu répondre.";
 
     const replyTime = Date.now();
 
-    // SAVE ASSISTANT
+    // SAVE ASSISTANT MESSAGE
     await db
       .collection("users")
       .doc(userId)
@@ -133,6 +155,9 @@ export default async function handler(req, res) {
         timestamp: replyTime
       });
 
+    // =========================
+    // FINAL RESPONSE
+    // =========================
     return res.status(200).json({
       reply,
       timestamp: replyTime
