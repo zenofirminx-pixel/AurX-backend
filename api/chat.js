@@ -10,7 +10,6 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 // =========================
@@ -28,21 +27,11 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    // =========================
-    // USER ID
-    // =========================
-    const userId =
-      "guest_" + (req.headers["x-forwarded-for"] || "local");
+    const userId = "guest_" + (req.headers["x-forwarded-for"] || "local");
 
-    // =========================
-    // BODY SAFE PARSE
-    // =========================
     let body = {};
     try {
-      body =
-        typeof req.body === "string"
-          ? JSON.parse(req.body)
-          : req.body || {};
+      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -54,7 +43,7 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY SYSTEM
+    // MEMORY
     // =========================
     const memories = extractMemory(message);
     await saveMemory(db, userId, memories);
@@ -64,7 +53,7 @@ export default async function handler(req, res) {
       .doc(userId)
       .collection("messages")
       .orderBy("timestamp", "desc")
-      .limit(100)
+      .limit(20)
       .get();
 
     const history = [];
@@ -84,9 +73,7 @@ export default async function handler(req, res) {
     const apiKey = process.env.OPENAI_API_KEY_5;
 
     if (!apiKey) {
-      return res.status(500).json({
-        error: "Missing OPENAI_API_KEY_5"
-      });
+      return res.status(500).json({ error: "Missing API key" });
     }
 
     // SAVE USER MESSAGE
@@ -101,7 +88,7 @@ export default async function handler(req, res) {
       });
 
     // =========================
-    // OPENROUTER REQUEST
+    // OPENROUTER (NON STREAM)
     // =========================
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
@@ -110,109 +97,47 @@ export default async function handler(req, res) {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://aur-x-pwa.vercel.app",
+          "HTTP-Referer": "https://aurx.vercel.app",
           "X-Title": "AurX"
         },
         body: JSON.stringify({
           model: "openai/gpt-4o-mini",
           messages,
-          stream: true
+          stream: false
         })
       }
     );
 
-    // =========================
-    // FALLBACK (IMPORTANT)
-    // =========================
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({}));
 
+    if (!response.ok) {
       return res.status(500).json({
         error: "OpenRouter error",
-        details: err
+        details: data
       });
     }
 
-    // =========================
-    // SSE HEADERS
-    // =========================
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
-    let fullReply = "";
-
-    const decoder = new TextDecoder("utf-8");
-
-    // =========================
-    // STREAM SAFE LOOP (FIXED)
-    // =========================
-    const reader = response.body?.getReader?.();
-
-    if (!reader) {
-      const data = await response.json().catch(() => ({}));
-      const reply =
-        data?.choices?.[0]?.message?.content || "Erreur stream";
-
-      fullReply = reply;
-
-      res.write(`data: ${JSON.stringify({ token: reply })}\n\n`);
-      res.write(
-        `data: ${JSON.stringify({ done: true, timestamp: Date.now() })}\n\n`
-      );
-      return res.end();
-    }
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n");
-
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-
-        const jsonStr = line.replace("data: ", "").trim();
-        if (jsonStr === "[DONE]") continue;
-
-        try {
-          const parsed = JSON.parse(jsonStr);
-          const token = parsed?.choices?.[0]?.delta?.content;
-
-          if (token) {
-            fullReply += token;
-            res.write(
-              `data: ${JSON.stringify({ token })}\n\n`
-            );
-          }
-        } catch {}
-      }
-    }
+    const reply =
+      data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
 
     const replyTime = Date.now();
 
-    // =========================
     // SAVE ASSISTANT
-    // =========================
     await db
       .collection("users")
       .doc(userId)
       .collection("messages")
       .add({
         role: "assistant",
-        text: fullReply,
+        text: reply,
         timestamp: replyTime
       });
 
-    res.write(
-      `data: ${JSON.stringify({
-        done: true,
-        timestamp: replyTime
-      })}\n\n`
-    );
+    return res.status(200).json({
+      reply,
+      timestamp: replyTime
+    });
 
-    res.end();
   } catch (err) {
     return res.status(500).json({
       error: "Server crash",
