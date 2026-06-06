@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   try {
     const cookies = parse(req.headers.cookie || '');
     const session = cookies.aurx_session;
-    
+
     if (!session) {
       return res.status(401).json({ error: 'No session' });
     }
@@ -25,20 +25,43 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Invalid session' });
     }
 
-    // 1. Wipe les conversations pour l'UI
-    await db.collection('conversations').doc(userId).set({ conversations: [] });
+    // =========================
+    // 1. SUPPRIME TOUTES CONVERSATIONS
+    // =========================
+    await db.collection('conversations')
+      .doc(userId)
+      .set({ conversations: [] });
 
-    // 2. Wipe les messages à plat pour l'IA
+    // =========================
+    // 2. SUPPRIME TOUS LES MESSAGES IA
+    // =========================
     const messagesRef = db.collection('users').doc(userId).collection('messages');
     const snapshot = await messagesRef.get();
-    
+
     const batch = db.batch();
-    snapshot.docs.forEach(doc => {
+    snapshot.forEach(doc => {
       batch.delete(doc.ref);
     });
+
     await batch.commit();
-    
-    return res.status(200).json({ ok: true });
+
+    // =========================
+    // 3. SUPPRIME MEMORY SI EXISTE
+    // =========================
+    const memoryRef = db.collection('users').doc(userId).collection('memory');
+    const memSnap = await memoryRef.get();
+
+    const batch2 = db.batch();
+    memSnap.forEach(doc => {
+      batch2.delete(doc.ref);
+    });
+
+    await batch2.commit();
+
+    return res.status(200).json({
+      ok: true,
+      message: "ALL DATA DELETED"
+    });
 
   } catch (e) {
     console.error('DeleteAll error:', e);
