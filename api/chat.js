@@ -2,7 +2,6 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
-import { parse } from 'cookie'; // <-- AJOUT
 
 // =========================
 // CORS
@@ -11,7 +10,7 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Credentials", "true"); // <-- AJOUTE CETTE LIGNE
 }
 
 // =========================
@@ -25,26 +24,14 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
-    if (req.method!== "POST") {
+    if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
     // =========================
-    // USER ID - LIT LE COOKIE MAINTENANT
+    // USER ID
     // =========================
-    let userId = "guest_" + (req.headers["x-forwarded-for"]?.split(',')[0] || "local");
-
-    const cookies = parse(req.headers.cookie || '');
-    const session = cookies.aurx_session;
-
-    if (session) {
-      try {
-        const user = JSON.parse(session);
-        userId = user.id; // maintenant c’est google_xxx au lieu de guest_
-      } catch (e) {
-        console.error('Session invalide:', e);
-      }
-    }
+    const userId = "guest_" + (req.headers["x-forwarded-for"] || "local");
 
     // =========================
     // BODY
@@ -53,7 +40,7 @@ export default async function handler(req, res) {
     try {
       body =
         typeof req.body === "string"
-         ? JSON.parse(req.body)
+          ? JSON.parse(req.body)
           : req.body || {};
     } catch {}
 
@@ -72,12 +59,12 @@ export default async function handler(req, res) {
     await saveMemory(db, userId, memories);
 
     const snapshot = await db
-     .collection("users")
-     .doc(userId)
-     .collection("messages")
-     .orderBy("timestamp", "desc")
-     .limit(20)
-     .get();
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
 
     const history = [];
 
@@ -90,8 +77,8 @@ export default async function handler(req, res) {
     });
 
     const messages = [
-     ...history,
-     ...buildPrompt(message)
+      ...history,
+      ...buildPrompt(message)
     ];
 
     const apiKey = process.env.OPENAI_API_KEY_1;
@@ -102,10 +89,10 @@ export default async function handler(req, res) {
 
     // SAVE USER MESSAGE
     await db
-     .collection("users")
-     .doc(userId)
-     .collection("messages")
-     .add({
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
         role: "user",
         text: message,
         timestamp: now
@@ -132,6 +119,7 @@ export default async function handler(req, res) {
       }
     );
 
+    // ❌ IMPORTANT: vérifier réponse brute
     const text = await response.text();
 
     let data;
@@ -159,10 +147,10 @@ export default async function handler(req, res) {
 
     // SAVE ASSISTANT
     await db
-     .collection("users")
-     .doc(userId)
-     .collection("messages")
-     .add({
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
         role: "assistant",
         text: reply,
         timestamp: replyTime
