@@ -15,6 +15,28 @@ function setCors(res) {
 }
 
 // =========================
+// INIT SAFE
+// =========================
+async function ensureUserStructure(db, userId) {
+  const userRef = db.collection("users").doc(userId);
+  const convRef = db.collection("conversations").doc(userId);
+
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) {
+    await userRef.set({
+      createdAt: Date.now()
+    });
+  }
+
+  const convSnap = await convRef.get();
+  if (!convSnap.exists) {
+    await convRef.set({
+      conversations: []
+    });
+  }
+}
+
+// =========================
 // HANDLER
 // =========================
 export default async function handler(req, res) {
@@ -35,15 +57,14 @@ export default async function handler(req, res) {
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
 
-    let userId = "guest_" + (req.headers["x-forwarded-for"]?.split(",")[0] || "local");
+    let userId =
+      "guest_" + (req.headers["x-forwarded-for"]?.split(",")[0] || "local");
 
     if (session) {
       try {
         const user = JSON.parse(Buffer.from(session, "base64").toString());
         userId = user.sid || user.id;
-      } catch (e) {
-        console.error("Session invalide:", e);
-      }
+      } catch {}
     }
 
     // =========================
@@ -51,7 +72,9 @@ export default async function handler(req, res) {
     // =========================
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -64,18 +87,32 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY EXTRACTION (LONG TERM)
+    // INIT STRUCTURE
     // =========================
-    const memories = extractMemory(message);
-    await saveMemory(db, userId, memories);
+    await ensureUserStructure(db, userId);
 
     // =========================
-    // LOAD CONVERSATION
+    // MEMORY EXTRACTION (IMPORTANT)
+    // 👉 DOIT RETOURNER: [{ type, value }]
+    // =========================
+    try {
+      const memories = extractMemory(message);
+      if (Array.isArray(memories)) {
+        await saveMemory(db, userId, memories);
+      }
+    } catch (e) {
+      console.log("memory error ignored");
+    }
+
+    // =========================
+    // CONVERSATIONS
     // =========================
     const convRef = db.collection("conversations").doc(userId);
     const convSnap = await convRef.get();
 
-    let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
+    let conversations = convSnap.exists
+      ? convSnap.data().conversations || []
+      : [];
 
     let currentConv = conversations.find(c => c.id === convId);
 
@@ -107,91 +144,132 @@ export default async function handler(req, res) {
         role: "user",
         text: message,
         timestamp: now,
-        convId: convId
+        convId
       });
 
     // =========================
-    // CLEAN HISTORY (IMPORTANT FIX)
+    // HISTORY
     // =========================
-    const msgSnapshot = await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .where("convId", "==", convId)
-      .orderBy("timestamp", "desc")
-      .limit(20)
-      .get();
+    let history = [];
 
-    const history = [];
-    msgSnapshot.forEach(doc => {
-      const data = doc.data();
-      history.unshift({
-        role: data.role,
-        content: data.text
+    try {
+      const snap = await db
+        .collection("users")
+        .doc(userId)
+        .collection("messages")
+        .where("convId", "==", convId)
+        .limit(20)
+        .get();
+
+      snap.forEach(doc => {
+        const d = doc.data();
+        history.unshift({
+          role: d.role,
+          content: d.text
+        });
       });
-    });
+    } catch {}
 
     // =========================
-    // MEMORY INJECTION (IMPORTANT FIX)
+    // MEMORY LOAD (STRUCTURE PROPRE)
     // =========================
-    const memorySnap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("memory")
-      .get();
-
     let memoryText = "";
-    memorySnap.forEach(doc => {
-      memoryText += doc.data().value + "\n";
-    });
 
+    try {
+      const memSnap = await db
+        .collection("users")
+        .doc(userId)
+        .collection("memory")
+        .get();
+
+      const identity = [];
+      const facts = [];
+      const preferences = [];
+      const style = [];
+
+      memSnap.forEach(doc => {
+        const d = doc.data();
+
+        switch (d.type) {
+          case "identity":
+            identity.push(d.value);
+            break;
+
+          case "preference":
+            preferences.push(d.value);
+            break;
+
+          case "style":
+            style.push(d.value);
+            break;
+
+          default:
+            facts.push(d.value);
+            break;
+        }
+      });
+
+      memoryText = `
+[IDENTITY]
+${identity.map(v => "- " + v).join("\n")}
+
+[FACTS]
+${facts.map(v => "- " + v).join("\n")}
+
+[PREFERENCES]
+${preferences.map(v => "- " + v).join("\n")}
+
+[STYLE]
+${style.map(v => "- " + v).join("\n")}
+      `.trim();
+
+    } catch {
+      memoryText = "";
+    }
+
+    // =========================
+    // PROMPT BUILD
+    // =========================
     const messages = [
       {
         role: "system",
-        content: memoryText
+        content: memoryText || "You are AurX chatbot."
       },
       ...history,
       ...buildPrompt(message)
     ];
 
     // =========================
-    // OPENROUTER CALL
+    // OPENROUTER
     // =========================
     const apiKey = process.env.OPENAI_API_KEY_1;
-    if (!apiKey) {
-      return res.status(500).json({ error: "Missing API key" });
-    }
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://aurx.vercel.app",
-        "X-Title": "AurX"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages,
-        stream: false
-      })
-    });
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://aurx.vercel.app",
+          "X-Title": "AurX"
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages,
+          stream: false
+        })
+      }
+    );
 
     const data = await response.json().catch(() => ({}));
 
-    if (!response.ok) {
-      return res.status(500).json({
-        error: "OpenRouter error",
-        details: data
-      });
-    }
+    const reply =
+      data?.choices?.[0]?.message?.content ||
+      "Je n’ai pas pu répondre.";
 
-    const reply = data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
     const replyTime = Date.now();
 
-    // =========================
-    // SAVE BOT MESSAGE
-    // =========================
     currentConv.messages.push({
       text: reply,
       type: "bot",
@@ -210,13 +288,12 @@ export default async function handler(req, res) {
         role: "assistant",
         text: reply,
         timestamp: replyTime,
-        convId: convId
+        convId
       });
 
     return res.status(200).json({
       reply,
-      convId: currentConv.id,
-      timestamp: replyTime
+      convId
     });
 
   } catch (err) {
