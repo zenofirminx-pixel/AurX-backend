@@ -48,19 +48,25 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // USER ID
+    // USER ID (FIXED: NO IP)
     // =========================
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
 
-    let userId =
-      "guest_" + (req.headers["x-forwarded-for"]?.split(",")[0] || "local");
+    let userId = null;
 
+    // ✅ PRIORITY 1: SESSION COOKIE
     if (session) {
       try {
         const user = JSON.parse(Buffer.from(session, "base64").toString());
         userId = user.sid || user.id;
       } catch {}
+    }
+
+    // ❌ NO IP FALLBACK FOR IDENTITY
+    // ✅ SAFE GUEST MODE
+    if (!userId) {
+      userId = "guest_global";
     }
 
     // =========================
@@ -214,20 +220,19 @@ ${style.map(v => "- " + v).join("\n")}
     } catch {}
 
     // =========================
-    // 🔥 SYSTEM PROMPT BOOST (IMPORTANT FIX)
+    // SYSTEM BOOST
     // =========================
     const systemBoost = userName
-      ? `User name (important): ${userName}. Use it naturally sometimes, not every sentence.`
+      ? `User name: ${userName}. Use it naturally sometimes.`
       : "";
 
     // =========================
-    // PROMPT BUILD
+    // PROMPT
     // =========================
     const messages = [
       {
         role: "system",
-        content:
-          `${systemBoost}\n\n${memoryText || "You are AurX chatbot."}`.trim()
+        content: `${systemBoost}\n\n${memoryText || "You are AurX chatbot."}`.trim()
       },
       ...history,
       ...buildPrompt(message)
