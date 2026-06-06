@@ -42,17 +42,19 @@ async function cleanupOldData(db, userId) {
   const now = Date.now();
 
   const snap = await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .get();
+   .collection("users")
+   .doc(userId)
+   .collection("messages")
+   .get();
 
-  snap.forEach(async (doc) => {
+  const batch = db.batch();
+  snap.forEach((doc) => {
     const data = doc.data();
     if (data.timestamp && now - data.timestamp > limit) {
-      await doc.ref.delete();
+      batch.delete(doc.ref);
     }
   });
+  await batch.commit();
 }
 
 // =========================
@@ -66,7 +68,7 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
-    if (req.method !== "POST") {
+    if (req.method!== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
@@ -94,7 +96,7 @@ export default async function handler(req, res) {
     try {
       body =
         typeof req.body === "string"
-          ? JSON.parse(req.body)
+         ? JSON.parse(req.body)
           : req.body || {};
     } catch {}
 
@@ -117,89 +119,57 @@ export default async function handler(req, res) {
     // =========================
     try {
       const memories = extractMemory(message);
-      if (Array.isArray(memories)) {
+      if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
       }
-    } catch {}
-
-    // =========================
-    // CONVERSATIONS LOAD
-    // =========================
-    const convRef = db.collection("conversations").doc(userId);
-    const convSnap = await convRef.get();
-
-    let conversations = convSnap.exists
-      ? convSnap.data().conversations || []
-      : [];
-
-    let currentConv = conversations.find(c => c.id === convId);
-
-    if (!currentConv) {
-      currentConv = {
-        id: convId,
-        title: message.slice(0, 40),
-        messages: [],
-        date: now,
-        updatedAt: now
-      };
-      conversations.unshift(currentConv);
+    } catch (e) {
+      console.error("Memory save error:", e);
     }
 
-    currentConv.messages.push({
-      text: message,
-      type: "user",
-      timestamp: now
-    });
-
     // =========================
-    // SAVE MESSAGE
-    // =========================
-    await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .add({
-        role: "user",
-        text: message,
-        timestamp: now,
-        convId
-      });
-
-    // =========================
-    // HISTORY
+    // HISTORY - FIXED
     // =========================
     let history = [];
 
     try {
       const snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .limit(20)
-        .get();
+       .collection("users")
+       .doc(userId)
+       .collection("messages")
+       .where("convId", "==", convId)
+       .orderBy("timestamp", "desc")
+       .limit(19) // 19 + message actuel = 20
+       .get();
 
-      snap.forEach(doc => {
+      // Reverse pour ordre chrono : plus ancien → plus récent
+      snap.docs.reverse().forEach(doc => {
         const d = doc.data();
-        history.unshift({
+        history.push({
           role: d.role,
           content: d.text
         });
       });
-    } catch {}
+    } catch (e) {
+      console.error("History load error:", e);
+    }
+
+    // Ajoute le message actuel à la fin
+    history.push({ role: "user", content: message });
 
     // =========================
-    // MEMORY LOAD
+    // MEMORY LOAD - RANKED
     // =========================
     let memoryText = "";
     let userName = null;
 
     try {
       const memSnap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("memory")
-        .get();
+       .collection("users")
+       .doc(userId)
+       .collection("memory")
+       .orderBy("timestamp", "desc")
+       .limit(50)
+       .get();
 
       const identity = [];
       const facts = [];
@@ -228,38 +198,84 @@ export default async function handler(req, res) {
         }
       });
 
-      memoryText = `
-[IDENTITY]
-${identity.map(v => "- " + v).join("\n")}
+      // Rank memory : prend les + récents + ceux pertinents au message
+      const keywords = message.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const relevantFacts = facts.filter(v =>
+        keywords.some(k => v.toLowerCase().includes(k))
+      ).slice(0, 5);
 
-[FACTS]
-${facts.map(v => "- " + v).join("\n")}
+      const memoryParts = [];
+      if (identity.length) memoryParts.push(`[IDENTITY]\n${identity.slice(0, 3).map(v => "- " + v).join("\n")}`);
+      if (relevantFacts.length) memoryParts.push(`[RELEVANT FACTS]\n${relevantFacts.map(v => "- " + v).join("\n")}`);
+      if (preferences.length) memoryParts.push(`[PREFERENCES]\n${preferences.slice(0, 5).map(v => "- " + v).join("\n")}`);
+      if (style.length) memoryParts.push(`[STYLE]\n${style.slice(0, 3).map(v => "- " + v).join("\n")}`);
 
-[PREFERENCES]
-${preferences.map(v => "- " + v).join("\n")}
-
-[STYLE]
-${style.map(v => "- " + v).join("\n")}
-      `.trim();
-    } catch {}
+      memoryText = memoryParts.join("\n\n");
+    } catch (e) {
+      console.error("Memory load error:", e);
+    }
 
     // =========================
     // SYSTEM BOOST
     // =========================
     const systemBoost = userName
-      ? `User name: ${userName}. Use it naturally sometimes.`
+     ? `User name: ${userName}. Use it naturally sometimes. Never say you remember their name every message.`
       : "";
 
     // =========================
-    // PROMPT
+    // SAVE MESSAGE USER - AVANT L'APPEL API
     // =========================
+    await db
+     .collection("users")
+     .doc(userId)
+     .collection("messages")
+     .add({
+        role: "user",
+        text: message,
+        timestamp: now,
+        convId
+      });
+
+    // =========================
+    // CONVERSATIONS UPDATE
+    // =========================
+    const convRef = db.collection("conversations").doc(userId);
+    const convSnap = await convRef.get();
+
+    let conversations = convSnap.exists
+     ? convSnap.data().conversations || []
+      : [];
+
+    let currentConv = conversations.find(c => c.id === convId);
+
+    if (!currentConv) {
+      currentConv = {
+        id: convId,
+        title: message.slice(0, 40),
+        messages: [],
+        date: now,
+        updatedAt: now
+      };
+      conversations.unshift(currentConv);
+    }
+
+    currentConv.messages.push({
+      text: message,
+      type: "user",
+      timestamp: now
+    });
+
+    // =========================
+    // PROMPT - FIXED
+    // =========================
+    const systemPrompt = buildPrompt(); // buildPrompt ne doit plus prendre message en param
+
     const messages = [
       {
         role: "system",
-        content: `${systemBoost}\n\n${memoryText || "You are AurX chatbot."}`.trim()
+        content: `${systemBoost}\n\n${memoryText || "You are AurX, a helpful AI assistant."}\n\n${systemPrompt}`.trim()
       },
-      ...history,
-      ...buildPrompt(message)
+     ...history // history contient déjà le message actuel
     ];
 
     // =========================
@@ -280,7 +296,8 @@ ${style.map(v => "- " + v).join("\n")}
         body: JSON.stringify({
           model: "openai/gpt-4o-mini",
           messages,
-          stream: false
+          stream: false,
+          temperature: 0.7
         })
       }
     );
@@ -301,13 +318,18 @@ ${style.map(v => "- " + v).join("\n")}
 
     currentConv.updatedAt = replyTime;
 
+    // Garde que les 50 convs les + récentes
+    if (conversations.length > 50) {
+      conversations = conversations.slice(0, 50);
+    }
+
     await convRef.set({ conversations });
 
     await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .add({
+     .collection("users")
+     .doc(userId)
+     .collection("messages")
+     .add({
         role: "assistant",
         text: reply,
         timestamp: replyTime,
@@ -317,7 +339,7 @@ ${style.map(v => "- " + v).join("\n")}
     // =========================
     // CLEANUP (14 DAYS ONLY MSG + CONV)
     // =========================
-    cleanupOldData(db, userId);
+    cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
     return res.status(200).json({
       reply,
