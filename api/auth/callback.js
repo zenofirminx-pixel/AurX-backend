@@ -1,104 +1,76 @@
-import db from "../lib/db.js";
-import crypto from "crypto";
+import { serialize } from 'cookie';
+import db from '../initMemory.js'; // ton fichier Firebase admin
 
 export default async function handler(req, res) {
+  const { code } = req.query;
+  
+  if (!code) {
+    return res.status(400).send('Code OAuth manquant');
+  }
+
+  const host = req.headers.host;
+  const protocol = host.includes('localhost') ? 'http' : 'https';
+  const REDIRECT_URI = `${protocol}://${host}/api/auth/callback`;
+
   try {
-    const code = req.query.code;
-
-    if (!code) {
-      return res.status(400).json({ error: "Missing code" });
-    }
-
-    // =========================
-    // EXCHANGE CODE → TOKEN
-    // =========================
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    // 1. Échange le code contre un access_token
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: process.env.GOOGLE_REDIRECT_URI,
-        grant_type: "authorization_code"
+        redirect_uri: REDIRECT_URI,
+        grant_type: 'authorization_code'
       })
     });
 
-    const tokenData = await tokenRes.json();
-
-    if (!tokenData.access_token) {
-      return res.status(400).json({
-        error: "Token exchange failed",
-        details: tokenData
-      });
+    const tokens = await tokenRes.json();
+    
+    if (!tokens.access_token) {
+      throw new Error('Pas de access_token reçu de Google');
     }
 
-    // =========================
-    // GET USER INFO
-    // =========================
-    const userRes = await fetch(
-      "https://www.googleapis.com/oauth2/v2/userinfo",
-      {
-        headers: {
-          Authorization: `Bearer ${tokenData.access_token}`
-        }
-      }
-    );
+    // 2. Récup les infos du user Google
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` }
+    });
+    
+    const gUser = await userRes.json();
 
-    const googleUser = await userRes.json();
+    // 3. Sauve/update le user dans Firestore
+    const uid = `google_${gUser.id}`;
+    await db.collection('users').doc(uid).set({
+      id: uid,
+      email: gUser.email,
+      name: gUser.name,
+      picture: gUser.picture,
+      provider: 'google',
+      lastLogin: Date.now()
+    }, { merge: true });
 
-    // =========================
-    // FIND OR CREATE USER
-    // =========================
-    const usersRef = db.collection("users");
-    const snapshot = await usersRef.where("email", "==", googleUser.email).limit(1).get();
-
-    let userId;
-
-    if (snapshot.empty) {
-      userId = crypto.randomUUID();
-
-      await usersRef.doc(userId).set({
-        email: googleUser.email,
-        googleId: googleUser.id,
-        createdAt: Date.now(),
-        profile: {
-          name: googleUser.name,
-          picture: googleUser.picture
-        },
-        memory: {
-          facts: [],
-          interactions: 0
-        }
-      });
-    } else {
-      userId = snapshot.docs[0].id;
-    }
-
-    // =========================
-    // SESSION
-    // =========================
-    const sessionToken = crypto.randomBytes(32).toString("hex");
-
-    await db.collection("sessions").doc(sessionToken).set({
-      userId,
-      createdAt: Date.now()
+    // 4. Crée le cookie de session
+    const sessionData = JSON.stringify({
+      id: uid,
+      email: gUser.email,
+      name: gUser.name,
+      picture: gUser.picture
     });
 
-    res.setHeader(
-      "Set-Cookie",
-      `session=${sessionToken}; HttpOnly; Path=/; SameSite=None; Secure; Max-Age=604800`
-    );
+    res.setHeader('Set-Cookie', serialize('aurx_session', sessionData, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7 // 7 jours
+    }));
 
-    // =========================
-    // REDIRECT FRONT
-    // =========================
-    return res.redirect("https://aurx.vercel.app");
-
+    // 5. Redirect vers ton front
+    res.redirect('https://aurx.vercel.app');
+    
   } catch (err) {
-    return res.status(500).json({
-      error: "Google OAuth failed",
-      details: err.message
-    });
+    console.error('Erreur OAuth callback:', err);
+    res.redirect('https://aurx.vercel.app?error=auth_failed');
   }
 }
