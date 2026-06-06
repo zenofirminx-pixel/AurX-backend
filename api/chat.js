@@ -30,17 +30,19 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // USER ID - LIT LE COOKIE
+    // USER ID - GUEST OU GOOGLE
     // =========================
     const cookies = parse(req.headers.cookie || '');
     const session = cookies.aurx_session;
 
-    let userId = "guest_" + (req.headers["x-forwarded-for"]?.split(',')[0] || "local");
+    let userId = null;
+    let isLoggedIn = false;
 
     if (session) {
       try {
         const user = JSON.parse(Buffer.from(session, 'base64').toString());
-        userId = user.sid || user.id;
+        userId = user.google_id;
+        if (userId) isLoggedIn = true;
       } catch (e) {
         console.error('Session invalide:', e);
       }
@@ -66,76 +68,81 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY EXTRACTION
+    // SI CO GOOGLE : MEMORY + HISTORY BACKEND
     // =========================
-    const memories = extractMemory(message);
-    await saveMemory(db, userId, memories);
+    if (isLoggedIn) {
+      // MEMORY EXTRACTION
+      const memories = extractMemory(message);
+      await saveMemory(db, userId, memories);
 
-    // =========================
-    // STRUCTURE CONVERSATIONS POUR L'UI
-    // =========================
-    const convRef = db.collection("conversations").doc(userId);
-    const convSnap = await convRef.get();
+      // STRUCTURE CONVERSATIONS POUR L'UI
+      const convRef = db.collection("conversations").doc(userId);
+      const convSnap = await convRef.get();
 
-    let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
-    let currentConv = conversations.find(c => c.id === convId);
+      let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+      let currentConv = conversations.find(c => c.id === convId);
 
-    if (!currentConv) {
-      currentConv = {
-        id: convId,
-        title: title,
-        messages: [],
-        date: now
-      };
-      conversations.unshift(currentConv);
-    }
+      if (!currentConv) {
+        currentConv = {
+          id: convId,
+          title: title,
+          messages: [],
+          date: now,
+          updatedAt: now
+        };
+        conversations.unshift(currentConv);
+      }
 
-    // Ajoute le message user dans la conv UI
-    currentConv.messages.push({
-      text: message,
-      type: 'user',
-      timestamp: now
-    });
-
-    // =========================
-    // SAVE MESSAGE À PLAT POUR CONTEXTE IA
-    // =========================
-    await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .add({
-        role: "user",
+      currentConv.messages.push({
         text: message,
-        timestamp: now,
-        convId: convId // ← lie le message à la conv
+        type: 'user',
+        timestamp: now
       });
 
-    // Si saveOnly, on save la conv et on return
-    if (saveOnly) {
-      await convRef.set({ conversations: conversations.slice(0, 50) });
-      return res.status(200).json({ ok: true, convId: currentConv.id });
+      // SAVE MESSAGE À PLAT POUR CONTEXTE IA
+      await db
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
+          role: "user",
+          text: message,
+          timestamp: now,
+          convId: convId
+        });
+
+      if (saveOnly) {
+        await convRef.set({ conversations: conversations.slice(0, 50) });
+        return res.status(200).json({ ok: true, convId: currentConv.id });
+      }
     }
 
     // =========================
-    // HISTORIQUE POUR IA - ON PREND LES 20 DERNIERS MESSAGES TOUS CONV CONFONDUES
+    // HISTORIQUE POUR IA
     // =========================
-    const msgSnapshot = await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .orderBy("timestamp", "desc")
-    .limit(20)
-    .get();
+    let history = [];
 
-    const history = [];
-    msgSnapshot.forEach(doc => {
-      const data = doc.data();
-      history.unshift({
-        role: data.role,
-        content: data.text
+    if (isLoggedIn) {
+      // Co Google : charge l'histo depuis Firestore
+      const msgSnapshot = await db
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
+
+      msgSnapshot.forEach(doc => {
+        const data = doc.data();
+        history.unshift({
+          role: data.role,
+          content: data.text
+        });
       });
-    });
+    } else {
+      // Guest : prend l'histo du body si le front l'envoie
+      history = body.history || [];
+    }
 
     const messages = [
     ...history,
@@ -189,37 +196,59 @@ export default async function handler(req, res) {
     const reply = data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
     const replyTime = Date.now();
 
-    // Ajoute la réponse IA dans la conv UI
-    currentConv.messages.push({
-      text: reply,
-      type: 'bot',
-      timestamp: replyTime
-    });
+    // =========================
+    // SI CO GOOGLE : SAVE BACKEND
+    // =========================
+    if (isLoggedIn) {
+      const convRef = db.collection("conversations").doc(userId);
+      const convSnap = await convRef.get();
+      let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+      let currentConv = conversations.find(c => c.id === convId);
 
-    // Update title si c'est le premier échange
-    if (currentConv.messages.length === 2) {
-      currentConv.title = message.slice(0, 40);
+      if (currentConv) {
+        currentConv.messages.push({
+          text: reply,
+          type: 'bot',
+          timestamp: replyTime
+        });
+
+        if (currentConv.messages.length === 2) {
+          currentConv.title = message.slice(0, 40);
+        }
+
+        currentConv.updatedAt = replyTime;
+
+        // CLEANUP - 15 JOURS
+        const fifteenDaysAgo = Date.now() - 15 * 24 * 60 * 60 * 1000;
+        conversations = conversations.filter(c => (c.updatedAt || c.date) > fifteenDaysAgo);
+
+        // LIMIT - 50 CONVS MAX
+        if (conversations.length > 50) {
+          conversations = conversations
+          .sort((a, b) => (b.updatedAt || b.date) - (a.updatedAt || a.date))
+          .slice(0, 50);
+        }
+
+        await convRef.set({ conversations });
+
+        await db
+        .collection("users")
+        .doc(userId)
+        .collection("messages")
+        .add({
+            role: "assistant",
+            text: reply,
+            timestamp: replyTime,
+            convId: convId
+          });
+      }
     }
-
-    // Save la conv UI
-    await convRef.set({ conversations: conversations.slice(0, 50) });
-
-    // Save le message assistant à plat pour contexte futur
-    await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .add({
-        role: "assistant",
-        text: reply,
-        timestamp: replyTime,
-        convId: convId
-      });
 
     return res.status(200).json({
       reply,
-      convId: currentConv.id,
-      timestamp: replyTime
+      convId: convId,
+      timestamp: replyTime,
+      isLoggedIn // ← Le front sait si c'est save backend ou pas
     });
 
   } catch (err) {
