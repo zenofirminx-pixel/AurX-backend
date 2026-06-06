@@ -1,21 +1,24 @@
-export default function handler(req, res) {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+export default async function handler(req, res) {
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  
+  // Récupère l’host dynamiquement : marche en local et en prod
+  const host = req.headers.host;
+  const protocol = host.includes('localhost') ? 'http' : 'https';
+  const REDIRECT_URI = `${protocol}://${host}/api/auth/callback`;
+  
+  const scope = [
+    'openid',
+    'email',
+    'profile'
+  ].join(' ');
 
-  if (!clientId || !redirectUri) {
-    return res.status(500).json({
-      error: "Missing GOOGLE_OAUTH_CONFIG"
-    });
-  }
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', REDIRECT_URI);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', scope);
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'consent');
 
-  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-
-  url.searchParams.set("client_id", clientId);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
-  url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
-
-  return res.redirect(url.toString());
+  res.redirect(authUrl.toString());
 }
