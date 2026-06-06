@@ -14,31 +14,49 @@ export default async function handler(req, res) {
     const cookies = parse(req.headers.cookie || '');
     const session = cookies.aurx_session;
     
+    // =========================
+    // GOOGLE OBLIGATOIRE
+    // =========================
     if (!session) {
-      return res.status(401).json({ error: 'No session' });
+      return res.status(401).json({ error: 'Non connecté. Connecte-toi avec Google.' });
     }
 
-    const data = JSON.parse(Buffer.from(session, 'base64').toString());
-    const userId = data.sid || data.id;
-
-    if (!userId) {
-      return res.status(401).json({ error: 'Invalid session' });
+    let userId;
+    try {
+      const data = JSON.parse(Buffer.from(session, 'base64').toString());
+      userId = data.google_id; // ← UNIQUEMENT google_id
+      if (!userId) {
+        return res.status(401).json({ error: 'Session invalide. Reconnecte-toi avec Google.' });
+      }
+    } catch (e) {
+      return res.status(401).json({ error: 'Session corrompue. Reconnecte-toi.' });
     }
 
-    // 1. Wipe les conversations pour l'UI
+    // =========================
+    // 1. WIPE LES CONVERSATIONS POUR L'UI
+    // =========================
     await db.collection('conversations').doc(userId).set({ conversations: [] });
 
-    // 2. Wipe les messages à plat pour l'IA
+    // =========================
+    // 2. WIPE LES MESSAGES À PLAT POUR L'IA
+    // =========================
     const messagesRef = db.collection('users').doc(userId).collection('messages');
     const snapshot = await messagesRef.get();
     
-    const batch = db.batch();
-    snapshot.docs.forEach(doc => {
-      batch.delete(doc.ref);
-    });
-    await batch.commit();
+    if (!snapshot.empty) {
+      const batch = db.batch();
+      snapshot.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+    }
+
+    // =========================
+    // 3. WIPE RATE LIMIT AUSSI
+    // =========================
+    await db.collection('rate_limits').doc(userId).delete().catch(() => {});
     
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, isLoggedIn: true });
 
   } catch (e) {
     console.error('DeleteAll error:', e);
