@@ -1,10 +1,9 @@
-import { db } from '../lib/firebase-admin.js';
+import { db } from './initMemory.js';
 import { parse } from 'cookie';
 
 export default async function handler(req, res) {
-  // CORS pour que le front puisse lire la réponse
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Origin', 'https://aurx.vercel.app');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -13,19 +12,26 @@ export default async function handler(req, res) {
 
   try {
     const cookies = parse(req.headers.cookie || '');
-    if (!cookies.aurx_session) {
-      return res.status(401).json({ error: 'No session', conversations: [] });
+    const session = cookies.aurx_session;
+    
+    if (!session) {
+      return res.status(401).json({ conversations: [] });
     }
 
-    const data = JSON.parse(Buffer.from(cookies.aurx_session, 'base64').toString());
-    const sessionId = data.sid;
-
-    if (!sessionId) {
-      return res.status(401).json({ error: 'Invalid session', conversations: [] });
+    let userId;
+    try {
+      const data = JSON.parse(Buffer.from(session, 'base64').toString());
+      userId = data.sid || data.id;
+    } catch (e) {
+      return res.status(401).json({ conversations: [] });
     }
 
-    // Récupère l'histo lié à ce sessionId
-    const ref = db.collection('conversations').doc(sessionId);
+    if (!userId) {
+      return res.status(401).json({ conversations: [] });
+    }
+
+    // Récupère les convs depuis conversations/{userId}
+    const ref = db.collection('conversations').doc(userId);
     const snap = await ref.get();
 
     if (!snap.exists) {
@@ -33,10 +39,14 @@ export default async function handler(req, res) {
     }
 
     const conversations = snap.data().conversations || [];
+    
+    // Trie par date décroissante, les plus récentes en premier
+    conversations.sort((a, b) => (b.date || 0) - (a.date || 0));
+
     return res.status(200).json({ conversations });
 
   } catch (e) {
     console.error('History error:', e);
-    return res.status(500).json({ error: 'Server error', conversations: [] });
+    return res.status(500).json({ conversations: [] });
   }
 }
