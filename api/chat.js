@@ -2,7 +2,7 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
-import { parse } from 'cookie';
+import { parse } from "cookie";
 
 // =========================
 // CORS
@@ -25,14 +25,14 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
-    if (req.method!== "POST") {
+    if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
     // =========================
-    // USER ID - GUEST OU GOOGLE
+    // SESSION
     // =========================
-    const cookies = parse(req.headers.cookie || '');
+    const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
 
     let userId = null;
@@ -40,11 +40,11 @@ export default async function handler(req, res) {
 
     if (session) {
       try {
-        const user = JSON.parse(Buffer.from(session, 'base64').toString());
+        const user = JSON.parse(Buffer.from(session, "base64").toString());
         userId = user.google_id;
         if (userId) isLoggedIn = true;
       } catch (e) {
-        console.error('Session invalide:', e);
+        console.error("Session invalide:", e);
       }
     }
 
@@ -53,7 +53,7 @@ export default async function handler(req, res) {
     // =========================
     let body = {};
     try {
-      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -68,24 +68,22 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // SI CO GOOGLE : MEMORY + HISTORY BACKEND
+    // MEMORY (USER)
     // =========================
     if (isLoggedIn) {
-      // MEMORY EXTRACTION
       const memories = extractMemory(message);
       await saveMemory(db, userId, memories);
 
-      // STRUCTURE CONVERSATIONS POUR L'UI
       const convRef = db.collection("conversations").doc(userId);
       const convSnap = await convRef.get();
 
-      let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+      let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
       let currentConv = conversations.find(c => c.id === convId);
 
       if (!currentConv) {
         currentConv = {
           id: convId,
-          title: title,
+          title,
           messages: [],
           date: now,
           updatedAt: now
@@ -94,69 +92,81 @@ export default async function handler(req, res) {
       }
 
       currentConv.messages.push({
-        text: message,
-        type: 'user',
+        content: message,
+        role: "user",
         timestamp: now
       });
 
-      // SAVE MESSAGE À PLAT POUR CONTEXTE IA
       await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .add({
+        .collection("users")
+        .doc(userId)
+        .collection("messages")
+        .add({
           role: "user",
-          text: message,
+          content: message,
           timestamp: now,
-          convId: convId
+          convId
         });
 
       if (saveOnly) {
         await convRef.set({ conversations: conversations.slice(0, 50) });
-        return res.status(200).json({ ok: true, convId: currentConv.id });
+        return res.status(200).json({ ok: true, convId });
       }
     }
 
     // =========================
-    // HISTORIQUE POUR IA
+    // HISTORY (IA MEMORY)
     // =========================
     let history = [];
 
     if (isLoggedIn) {
-      // Co Google : charge l'histo depuis Firestore
       const msgSnapshot = await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .orderBy("timestamp", "desc")
-      .limit(20)
-      .get();
+        .collection("users")
+        .doc(userId)
+        .collection("messages")
+        .orderBy("timestamp", "asc")
+        .limit(20)
+        .get();
 
       msgSnapshot.forEach(doc => {
         const data = doc.data();
-        history.unshift({
+        history.push({
           role: data.role,
-          content: data.text
+          content: data.content
         });
       });
     } else {
-      // Guest : prend l'histo du body si le front l'envoie
       history = body.history || [];
     }
 
+    // =========================
+    // SYSTEM PROMPT (IMPORTANT)
+    // =========================
+    const systemPrompt = buildPrompt();
+
+    // =========================
+    // FINAL MESSAGES (FIX IMPORTANT)
+    // =========================
     const messages = [
-    ...history,
-    ...buildPrompt(message)
+      {
+        role: "system",
+        content: systemPrompt
+      },
+      ...history,
+      {
+        role: "user",
+        content: message
+      }
     ];
 
+    // =========================
+    // OPENROUTER
+    // =========================
     const apiKey = process.env.OPENAI_API_KEY_1;
     if (!apiKey) {
       return res.status(500).json({ error: "Missing API key" });
     }
 
-    // =========================
-    // OPENROUTER
-    // =========================
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -175,16 +185,7 @@ export default async function handler(req, res) {
       }
     );
 
-    const text = await response.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return res.status(500).json({
-        error: "Invalid JSON from OpenRouter",
-        raw: text
-      });
-    }
+    const data = await response.json();
 
     if (!response.ok) {
       return res.status(500).json({
@@ -197,62 +198,57 @@ export default async function handler(req, res) {
     const replyTime = Date.now();
 
     // =========================
-    // SI CO GOOGLE : SAVE BACKEND
+    // SAVE RESPONSE
     // =========================
     if (isLoggedIn) {
       const convRef = db.collection("conversations").doc(userId);
       const convSnap = await convRef.get();
-      let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+
+      let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
       let currentConv = conversations.find(c => c.id === convId);
 
       if (currentConv) {
         currentConv.messages.push({
-          text: reply,
-          type: 'bot',
+          content: reply,
+          role: "assistant",
           timestamp: replyTime
         });
 
-        if (currentConv.messages.length === 2) {
-          currentConv.title = message.slice(0, 40);
-        }
-
         currentConv.updatedAt = replyTime;
 
-        // CLEANUP - 15 JOURS
         const fifteenDaysAgo = Date.now() - 15 * 24 * 60 * 60 * 1000;
         conversations = conversations.filter(c => (c.updatedAt || c.date) > fifteenDaysAgo);
 
-        // LIMIT - 50 CONVS MAX
         if (conversations.length > 50) {
           conversations = conversations
-          .sort((a, b) => (b.updatedAt || b.date) - (a.updatedAt || a.date))
-          .slice(0, 50);
+            .sort((a, b) => (b.updatedAt || b.date) - (a.updatedAt || a.date))
+            .slice(0, 50);
         }
 
         await convRef.set({ conversations });
 
         await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .add({
+          .collection("users")
+          .doc(userId)
+          .collection("messages")
+          .add({
             role: "assistant",
-            text: reply,
+            content: reply,
             timestamp: replyTime,
-            convId: convId
+            convId
           });
       }
     }
 
     return res.status(200).json({
       reply,
-      convId: convId,
+      convId,
       timestamp: replyTime,
-      isLoggedIn // ← Le front sait si c'est save backend ou pas
+      isLoggedIn
     });
 
   } catch (err) {
-    console.error('Chat error:', err);
+    console.error("Chat error:", err);
     return res.status(500).json({
       error: "Server crash",
       details: err.message
