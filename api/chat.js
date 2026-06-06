@@ -35,26 +35,39 @@ async function ensureUserStructure(db, userId) {
 }
 
 // =========================
-// CLEANUP 14 DAYS (ONLY MSG + CONV)
+// CLEANUP 5 DAYS - MSG + CONV
 // =========================
 async function cleanupOldData(db, userId) {
-  const limit = 14 * 24 * 60 * 60 * 1000;
+  const limit = 5 * 24 * 60 * 60 * 1000; // 5 jours
   const now = Date.now();
 
-  const snap = await db
+  // 1. Cleanup messages
+  const msgSnap = await db
    .collection("users")
    .doc(userId)
    .collection("messages")
+   .where("timestamp", "<", now - limit)
    .get();
 
-  const batch = db.batch();
-  snap.forEach((doc) => {
-    const data = doc.data();
-    if (data.timestamp && now - data.timestamp > limit) {
-      batch.delete(doc.ref);
+  const msgBatch = db.batch();
+  msgSnap.forEach((doc) => msgBatch.delete(doc.ref));
+  await msgBatch.commit();
+
+  // 2. Cleanup conversations
+  const convRef = db.collection("conversations").doc(userId);
+  const convSnap = await convRef.get();
+
+  if (convSnap.exists) {
+    const conversations = convSnap.data().conversations || [];
+    const filtered = conversations.filter(c => {
+      const lastUpdate = c.updatedAt || c.date || 0;
+      return now - lastUpdate <= limit;
+    });
+
+    if (filtered.length!== conversations.length) {
+      await convRef.set({ conversations: filtered });
     }
-  });
-  await batch.commit();
+  }
 }
 
 // =========================
@@ -127,7 +140,7 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // HISTORY - FIXED
+    // HISTORY - MESSAGES PRÉCÉDENTS D'ABORD
     // =========================
     let history = [];
 
@@ -138,10 +151,10 @@ export default async function handler(req, res) {
        .collection("messages")
        .where("convId", "==", convId)
        .orderBy("timestamp", "desc")
-       .limit(19) // 19 + message actuel = 20
+       .limit(20)
        .get();
 
-      // Reverse pour ordre chrono : plus ancien → plus récent
+      // Reverse = du plus ancien au plus récent
       snap.docs.reverse().forEach(doc => {
         const d = doc.data();
         history.push({
@@ -153,11 +166,11 @@ export default async function handler(req, res) {
       console.error("History load error:", e);
     }
 
-    // Ajoute le message actuel à la fin
+    // Ajoute le message actuel à la fin de l'history
     history.push({ role: "user", content: message });
 
     // =========================
-    // MEMORY LOAD - RANKED
+    // MEMORY LOAD - COURT
     // =========================
     let memoryText = "";
     let userName = null;
@@ -168,13 +181,12 @@ export default async function handler(req, res) {
        .doc(userId)
        .collection("memory")
        .orderBy("timestamp", "desc")
-       .limit(50)
+       .limit(30)
        .get();
 
       const identity = [];
       const facts = [];
       const preferences = [];
-      const style = [];
 
       memSnap.forEach(doc => {
         const d = doc.data();
@@ -190,40 +202,24 @@ export default async function handler(req, res) {
           case "preference":
             preferences.push(d.value);
             break;
-          case "style":
-            style.push(d.value);
-            break;
           default:
             facts.push(d.value);
         }
       });
 
-      // Rank memory : prend les + récents + ceux pertinents au message
-      const keywords = message.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-      const relevantFacts = facts.filter(v =>
-        keywords.some(k => v.toLowerCase().includes(k))
-      ).slice(0, 5);
-
+      // Garde que l'essentiel : nom + 3 facts max
       const memoryParts = [];
-      if (identity.length) memoryParts.push(`[IDENTITY]\n${identity.slice(0, 3).map(v => "- " + v).join("\n")}`);
-      if (relevantFacts.length) memoryParts.push(`[RELEVANT FACTS]\n${relevantFacts.map(v => "- " + v).join("\n")}`);
-      if (preferences.length) memoryParts.push(`[PREFERENCES]\n${preferences.slice(0, 5).map(v => "- " + v).join("\n")}`);
-      if (style.length) memoryParts.push(`[STYLE]\n${style.slice(0, 3).map(v => "- " + v).join("\n")}`);
+      if (identity.length) memoryParts.push(`User: ${identity[0]}`);
+      if (facts.length) memoryParts.push(`Facts: ${facts.slice(0, 3).join(", ")}`);
+      if (preferences.length) memoryParts.push(`Likes: ${preferences.slice(0, 2).join(", ")}`);
 
-      memoryText = memoryParts.join("\n\n");
+      memoryText = memoryParts.join(" | ");
     } catch (e) {
       console.error("Memory load error:", e);
     }
 
     // =========================
-    // SYSTEM BOOST
-    // =========================
-    const systemBoost = userName
-     ? `User name: ${userName}. Use it naturally sometimes. Never say you remember their name every message.`
-      : "";
-
-    // =========================
-    // SAVE MESSAGE USER - AVANT L'APPEL API
+    // SAVE MESSAGE USER
     // =========================
     await db
      .collection("users")
@@ -266,16 +262,16 @@ export default async function handler(req, res) {
     });
 
     // =========================
-    // PROMPT - FIXED
+    // PROMPT - MESSAGES D'ABORD, MEMORY APRÈS
     // =========================
-    const systemPrompt = buildPrompt(); // buildPrompt ne doit plus prendre message en param
+    const systemPrompt = buildPrompt(); // Doit retourner juste les instructions
 
     const messages = [
       {
         role: "system",
-        content: `${systemBoost}\n\n${memoryText || "You are AurX, a helpful AI assistant."}\n\n${systemPrompt}`.trim()
+        content: `You are AurX. ${memoryText? `Context: ${memoryText}` : ""}\n\n${systemPrompt}`.trim()
       },
-     ...history // history contient déjà le message actuel
+     ...history // ← messages précédents + actuel = priorité max
     ];
 
     // =========================
@@ -318,9 +314,9 @@ export default async function handler(req, res) {
 
     currentConv.updatedAt = replyTime;
 
-    // Garde que les 50 convs les + récentes
-    if (conversations.length > 50) {
-      conversations = conversations.slice(0, 50);
+    // Garde que les 30 convs les + récentes
+    if (conversations.length > 30) {
+      conversations = conversations.slice(0, 30);
     }
 
     await convRef.set({ conversations });
@@ -337,7 +333,7 @@ export default async function handler(req, res) {
       });
 
     // =========================
-    // CLEANUP (14 DAYS ONLY MSG + CONV)
+    // CLEANUP 5 DAYS
     // =========================
     cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
