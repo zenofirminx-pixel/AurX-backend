@@ -23,16 +23,12 @@ async function ensureUserStructure(db, userId) {
 
   const userSnap = await userRef.get();
   if (!userSnap.exists) {
-    await userRef.set({
-      createdAt: Date.now()
-    });
+    await userRef.set({ createdAt: Date.now() });
   }
 
   const convSnap = await convRef.get();
   if (!convSnap.exists) {
-    await convRef.set({
-      conversations: []
-    });
+    await convRef.set({ conversations: [] });
   }
 }
 
@@ -72,9 +68,10 @@ export default async function handler(req, res) {
     // =========================
     let body = {};
     try {
-      body = typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body || {};
+      body =
+        typeof req.body === "string"
+          ? JSON.parse(req.body)
+          : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
@@ -86,23 +83,17 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // =========================
-    // INIT STRUCTURE
-    // =========================
     await ensureUserStructure(db, userId);
 
     // =========================
-    // MEMORY EXTRACTION (IMPORTANT)
-    // 👉 DOIT RETOURNER: [{ type, value }]
+    // MEMORY SAVE
     // =========================
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories)) {
         await saveMemory(db, userId, memories);
       }
-    } catch (e) {
-      console.log("memory error ignored");
-    }
+    } catch {}
 
     // =========================
     // CONVERSATIONS
@@ -133,9 +124,6 @@ export default async function handler(req, res) {
       timestamp: now
     });
 
-    // =========================
-    // SAVE MESSAGE (IA CONTEXT)
-    // =========================
     await db
       .collection("users")
       .doc(userId)
@@ -171,9 +159,10 @@ export default async function handler(req, res) {
     } catch {}
 
     // =========================
-    // MEMORY LOAD (STRUCTURE PROPRE)
+    // MEMORY LOAD
     // =========================
     let memoryText = "";
+    let userName = null;
 
     try {
       const memSnap = await db
@@ -190,22 +179,22 @@ export default async function handler(req, res) {
       memSnap.forEach(doc => {
         const d = doc.data();
 
+        if (d.type === "identity" && d.key === "name") {
+          userName = d.value;
+        }
+
         switch (d.type) {
           case "identity":
             identity.push(d.value);
             break;
-
           case "preference":
             preferences.push(d.value);
             break;
-
           case "style":
             style.push(d.value);
             break;
-
           default:
             facts.push(d.value);
-            break;
         }
       });
 
@@ -222,10 +211,14 @@ ${preferences.map(v => "- " + v).join("\n")}
 [STYLE]
 ${style.map(v => "- " + v).join("\n")}
       `.trim();
+    } catch {}
 
-    } catch {
-      memoryText = "";
-    }
+    // =========================
+    // 🔥 SYSTEM PROMPT BOOST (IMPORTANT FIX)
+    // =========================
+    const systemBoost = userName
+      ? `User name (important): ${userName}. Use it naturally sometimes, not every sentence.`
+      : "";
 
     // =========================
     // PROMPT BUILD
@@ -233,7 +226,8 @@ ${style.map(v => "- " + v).join("\n")}
     const messages = [
       {
         role: "system",
-        content: memoryText || "You are AurX chatbot."
+        content:
+          `${systemBoost}\n\n${memoryText || "You are AurX chatbot."}`.trim()
       },
       ...history,
       ...buildPrompt(message)
