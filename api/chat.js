@@ -2,7 +2,7 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
-import { parse } from 'cookie';
+import { parse } from "cookie";
 
 // =========================
 // CORS
@@ -25,24 +25,24 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
-    if (req.method!== "POST") {
+    if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
     // =========================
-    // USER ID - LIT LE COOKIE
+    // USER ID
     // =========================
-    const cookies = parse(req.headers.cookie || '');
+    const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
 
-    let userId = "guest_" + (req.headers["x-forwarded-for"]?.split(',')[0] || "local");
+    let userId = "guest_" + (req.headers["x-forwarded-for"]?.split(",")[0] || "local");
 
     if (session) {
       try {
-        const user = JSON.parse(Buffer.from(session, 'base64').toString());
+        const user = JSON.parse(Buffer.from(session, "base64").toString());
         userId = user.sid || user.id;
       } catch (e) {
-        console.error('Session invalide:', e);
+        console.error("Session invalide:", e);
       }
     }
 
@@ -51,13 +51,11 @@ export default async function handler(req, res) {
     // =========================
     let body = {};
     try {
-      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     } catch {}
 
     const message = body.message?.trim();
     const convId = body.convId || Date.now().toString();
-    const title = body.title || message?.slice(0, 40);
-    const saveOnly = body.saveOnly || false;
 
     if (!message) {
       return res.status(400).json({ error: "Missing message" });
@@ -66,67 +64,63 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     // =========================
-    // MEMORY EXTRACTION
+    // MEMORY EXTRACTION (LONG TERM)
     // =========================
     const memories = extractMemory(message);
     await saveMemory(db, userId, memories);
 
     // =========================
-    // STRUCTURE CONVERSATIONS POUR L'UI
+    // LOAD CONVERSATION
     // =========================
     const convRef = db.collection("conversations").doc(userId);
     const convSnap = await convRef.get();
 
-    let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+    let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
+
     let currentConv = conversations.find(c => c.id === convId);
 
     if (!currentConv) {
       currentConv = {
         id: convId,
-        title: title,
+        title: message.slice(0, 40),
         messages: [],
-        date: now
+        date: now,
+        updatedAt: now
       };
       conversations.unshift(currentConv);
     }
 
-    // Ajoute le message user dans la conv UI
     currentConv.messages.push({
       text: message,
-      type: 'user',
+      type: "user",
       timestamp: now
     });
 
     // =========================
-    // SAVE MESSAGE À PLAT POUR CONTEXTE IA
+    // SAVE MESSAGE (IA CONTEXT)
     // =========================
     await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .add({
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
         role: "user",
         text: message,
         timestamp: now,
-        convId: convId // ← lie le message à la conv
+        convId: convId
       });
 
-    // Si saveOnly, on save la conv et on return
-    if (saveOnly) {
-      await convRef.set({ conversations: conversations.slice(0, 50) });
-      return res.status(200).json({ ok: true, convId: currentConv.id });
-    }
-
     // =========================
-    // HISTORIQUE POUR IA - ON PREND LES 20 DERNIERS MESSAGES TOUS CONV CONFONDUES
+    // CLEAN HISTORY (IMPORTANT FIX)
     // =========================
     const msgSnapshot = await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .orderBy("timestamp", "desc")
-    .limit(20)
-    .get();
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .where("convId", "==", convId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
 
     const history = [];
     msgSnapshot.forEach(doc => {
@@ -137,47 +131,53 @@ export default async function handler(req, res) {
       });
     });
 
+    // =========================
+    // MEMORY INJECTION (IMPORTANT FIX)
+    // =========================
+    const memorySnap = await db
+      .collection("users")
+      .doc(userId)
+      .collection("memory")
+      .get();
+
+    let memoryText = "";
+    memorySnap.forEach(doc => {
+      memoryText += doc.data().value + "\n";
+    });
+
     const messages = [
-    ...history,
-    ...buildPrompt(message)
+      {
+        role: "system",
+        content: memoryText
+      },
+      ...history,
+      ...buildPrompt(message)
     ];
 
+    // =========================
+    // OPENROUTER CALL
+    // =========================
     const apiKey = process.env.OPENAI_API_KEY_1;
     if (!apiKey) {
       return res.status(500).json({ error: "Missing API key" });
     }
 
-    // =========================
-    // OPENROUTER
-    // =========================
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://aurx.vercel.app",
-          "X-Title": "AurX"
-        },
-        body: JSON.stringify({
-          model: "openai/gpt-4o-mini",
-          messages,
-          stream: false
-        })
-      }
-    );
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://aurx.vercel.app",
+        "X-Title": "AurX"
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4o-mini",
+        messages,
+        stream: false
+      })
+    });
 
-    const text = await response.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return res.status(500).json({
-        error: "Invalid JSON from OpenRouter",
-        raw: text
-      });
-    }
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       return res.status(500).json({
@@ -189,27 +189,24 @@ export default async function handler(req, res) {
     const reply = data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
     const replyTime = Date.now();
 
-    // Ajoute la réponse IA dans la conv UI
+    // =========================
+    // SAVE BOT MESSAGE
+    // =========================
     currentConv.messages.push({
       text: reply,
-      type: 'bot',
+      type: "bot",
       timestamp: replyTime
     });
 
-    // Update title si c'est le premier échange
-    if (currentConv.messages.length === 2) {
-      currentConv.title = message.slice(0, 40);
-    }
+    currentConv.updatedAt = replyTime;
 
-    // Save la conv UI
-    await convRef.set({ conversations: conversations.slice(0, 50) });
+    await convRef.set({ conversations });
 
-    // Save le message assistant à plat pour contexte futur
     await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .add({
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .add({
         role: "assistant",
         text: reply,
         timestamp: replyTime,
@@ -223,7 +220,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error('Chat error:', err);
+    console.error("Chat error:", err);
     return res.status(500).json({
       error: "Server crash",
       details: err.message
