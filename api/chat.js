@@ -15,21 +15,44 @@ function setCors(res) {
 }
 
 // =========================
-// INIT SAFE
+// INIT SAFE (NO RESET)
 // =========================
 async function ensureUserStructure(db, userId) {
+  if (!userId) return;
+
   const userRef = db.collection("users").doc(userId);
   const convRef = db.collection("conversations").doc(userId);
 
-  const userSnap = await userRef.get();
-  if (!userSnap.exists) {
-    await userRef.set({ createdAt: Date.now() });
-  }
+  await userRef.set(
+    { createdAt: Date.now() },
+    { merge: true }
+  );
 
-  const convSnap = await convRef.get();
-  if (!convSnap.exists) {
-    await convRef.set({ conversations: [] });
-  }
+  await convRef.set(
+    { conversations: [] },
+    { merge: true }
+  );
+}
+
+// =========================
+// CLEANUP 14 DAYS (ONLY MSG + CONV)
+// =========================
+async function cleanupOldData(db, userId) {
+  const limit = 14 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  const snap = await db
+    .collection("users")
+    .doc(userId)
+    .collection("messages")
+    .get();
+
+  snap.forEach(async (doc) => {
+    const data = doc.data();
+    if (data.timestamp && now - data.timestamp > limit) {
+      await doc.ref.delete();
+    }
+  });
 }
 
 // =========================
@@ -48,25 +71,20 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // USER ID (FIXED: NO IP)
+    // USER ID (COOKIE ONLY)
     // =========================
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
 
-    let userId = null;
+    let userId = "guest_global";
 
-    // ✅ PRIORITY 1: SESSION COOKIE
     if (session) {
       try {
         const user = JSON.parse(Buffer.from(session, "base64").toString());
-        userId = user.sid || user.id;
-      } catch {}
-    }
-
-    // ❌ NO IP FALLBACK FOR IDENTITY
-    // ✅ SAFE GUEST MODE
-    if (!userId) {
-      userId = "guest_global";
+        userId = user.sid || user.id || "guest_global";
+      } catch {
+        userId = "guest_global";
+      }
     }
 
     // =========================
@@ -89,6 +107,9 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
+    // =========================
+    // INIT USER
+    // =========================
     await ensureUserStructure(db, userId);
 
     // =========================
@@ -102,7 +123,7 @@ export default async function handler(req, res) {
     } catch {}
 
     // =========================
-    // CONVERSATIONS
+    // CONVERSATIONS LOAD
     // =========================
     const convRef = db.collection("conversations").doc(userId);
     const convSnap = await convRef.get();
@@ -130,6 +151,9 @@ export default async function handler(req, res) {
       timestamp: now
     });
 
+    // =========================
+    // SAVE MESSAGE
+    // =========================
     await db
       .collection("users")
       .doc(userId)
@@ -289,6 +313,11 @@ ${style.map(v => "- " + v).join("\n")}
         timestamp: replyTime,
         convId
       });
+
+    // =========================
+    // CLEANUP (14 DAYS ONLY MSG + CONV)
+    // =========================
+    cleanupOldData(db, userId);
 
     return res.status(200).json({
       reply,
