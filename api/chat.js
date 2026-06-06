@@ -81,7 +81,7 @@ export default async function handler(req, res) {
       ...buildPrompt(message)
     ];
 
-    const apiKey = process.env.OPENAI_API_KEY_5;
+    const apiKey = process.env.OPENAI_API_KEY_1;
 
     if (!apiKey) {
       return res.status(500).json({ error: "Missing API key" });
