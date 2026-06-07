@@ -62,10 +62,10 @@ export default async function handler(req, res) {
       body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
     } catch {}
     const message = body.message?.trim();
-    const convId = body.convId; // ← PLUS DE FALLBACK
+    const convId = body.convId;
 
     if (!message) return res.status(400).json({ error: "Missing message" });
-    if (!convId) return res.status(400).json({ error: "Missing convId" }); // ← OBLIGATOIRE
+    if (!convId) return res.status(400).json({ error: "Missing convId" });
 
     const now = Date.now();
     await ensureUserStructure(db, userId);
@@ -107,7 +107,6 @@ export default async function handler(req, res) {
       console.error("History load error:", e);
     }
 
-    // AJOUTE LE MESSAGE ACTUEL À L'HISTORY
     history.push({ role: "user", content: message });
 
     // MEMORY LOAD
@@ -136,7 +135,7 @@ export default async function handler(req, res) {
       console.error("Memory load error:", e);
     }
 
-    // SAVE USER MSG APRÈS CHARGEMENT
+    // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -165,9 +164,14 @@ export default async function handler(req, res) {
  ...history
     ];
 
-    console.log("[GPT] Sending", messages.length, "messages. Last:", history[history.length - 1]);
+    console.log("[GPT] Streaming", messages.length, "messages");
 
-    // OPENROUTER
+    // SSE HEADERS
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // OPENROUTER STREAM
     const apiKey = process.env.OPENAI_API_KEY_1;
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -180,33 +184,75 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "openai/gpt-4o-mini",
         messages,
-        stream: false,
+        stream: true,
         temperature: 0.7
       })
     });
 
-    const data = await response.json().catch(() => ({}));
-    const reply = data?.choices?.[0]?.message?.content || "Je n’ai pas pu répondre.";
-    const replyTime = Date.now();
+    if (!response.ok) {
+      res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
+      res.end();
+      return;
+    }
 
-    currentConv.messages.push({ text: reply, type: "bot", timestamp: replyTime });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullReply = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              res.write(`data: [DONE]\n\n`);
+              break;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              if (content) {
+                fullReply += content;
+                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Stream error:', e);
+      res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
+    }
+
+    res.end();
+
+    // SAVE ASSISTANT MSG APRÈS LE STREAM
+    const replyTime = Date.now();
+    currentConv.messages.push({ text: fullReply, type: "bot", timestamp: replyTime });
     currentConv.updatedAt = replyTime;
     if (conversations.length > 30) conversations = conversations.slice(0, 30);
     await convRef.set({ conversations });
 
     await db.collection("users").doc(userId).collection("messages").add({
       role: "assistant",
-      text: reply,
+      text: fullReply,
       timestamp: replyTime,
       convId
     });
 
     cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
-    return res.status(200).json({ reply, convId });
-
   } catch (err) {
     console.error("Chat error:", err);
-    return res.status(500).json({ error: "Server crash", details: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Server crash", details: err.message });
+    }
   }
 }
