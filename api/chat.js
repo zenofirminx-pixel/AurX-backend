@@ -4,9 +4,6 @@ import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
 import { parse } from "cookie";
 
-// =========================
-// CORS
-// =========================
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -14,9 +11,6 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-// =========================
-// INIT SAFE (NO RESET)
-// =========================
 async function ensureUserStructure(db, userId) {
   if (!userId) return;
   const userRef = db.collection("users").doc(userId);
@@ -25,20 +19,10 @@ async function ensureUserStructure(db, userId) {
   await convRef.set({ conversations: [] }, { merge: true });
 }
 
-// =========================
-// CLEANUP 5 DAYS
-// =========================
 async function cleanupOldData(db, userId) {
   const limit = 5 * 24 * 60 * 60 * 1000;
   const now = Date.now();
-
-  const msgSnap = await db
-  .collection("users")
-  .doc(userId)
-  .collection("messages")
-  .where("timestamp", "<", now - limit)
-  .get();
-
+  const msgSnap = await db.collection("users").doc(userId).collection("messages").where("timestamp", "<", now - limit).get();
   const msgBatch = db.batch();
   msgSnap.forEach((doc) => msgBatch.delete(doc.ref));
   await msgBatch.commit();
@@ -57,16 +41,12 @@ async function cleanupOldData(db, userId) {
   }
 }
 
-// =========================
-// HANDLER
-// =========================
 export default async function handler(req, res) {
   try {
     setCors(res);
     if (req.method === "OPTIONS") return res.status(200).end();
     if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-    // USER ID
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
     let userId = "guest_global";
@@ -77,14 +57,15 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    // BODY
     let body = {};
     try {
       body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
     } catch {}
     const message = body.message?.trim();
-    const convId = body.convId || Date.now().toString();
+    const convId = body.convId; // ← PLUS DE FALLBACK
+
     if (!message) return res.status(400).json({ error: "Missing message" });
+    if (!convId) return res.status(400).json({ error: "Missing convId" }); // ← OBLIGATOIRE
 
     const now = Date.now();
     await ensureUserStructure(db, userId);
@@ -99,63 +80,41 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // =========================
-    // HISTORY - FIX INDEX + DEBUG
-    // =========================
+    // HISTORY - CHARGE D'ABORD
     let history = [];
     try {
-      // Si l'index existe pas, Firestore throw. On catch et fallback sans orderBy
-      let snap;
-      try {
-        snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .orderBy("timestamp", "desc")
-        .limit(20)
-        .get();
-      } catch (indexErr) {
-        console.warn("Index missing, fallback without orderBy:", indexErr.message);
-        snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .limit(20)
-        .get();
-      }
+      const snap = await db
+    .collection("users")
+    .doc(userId)
+    .collection("messages")
+    .where("convId", "==", convId)
+    .limit(50)
+    .get();
 
-      // Tri manuel si orderBy a fail
-      const docs = snap.docs.sort((a, b) => a.data().timestamp - b.data().timestamp);
+      const docs = snap.docs
+    .map(doc => ({...doc.data(), id: doc.id }))
+    .sort((a, b) => a.timestamp - b.timestamp);
 
-      docs.forEach(doc => {
-        const d = doc.data();
+      docs.forEach(d => {
         history.push({
           role: d.role,
           content: d.text
         });
       });
 
-      console.log(`[HISTORY] Loaded ${history.length} messages for convId ${convId}`);
+      console.log(`[HISTORY] UserId: ${userId} | ConvId: ${convId} | Loaded ${history.length} messages`);
     } catch (e) {
       console.error("History load error:", e);
     }
 
+    // AJOUTE LE MESSAGE ACTUEL À L'HISTORY
     history.push({ role: "user", content: message });
 
     // MEMORY LOAD
     let memoryText = "";
     let userName = null;
     try {
-      const memSnap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("memory")
-      .orderBy("timestamp", "desc")
-      .limit(30)
-      .get();
-
+      const memSnap = await db.collection("users").doc(userId).collection("memory").limit(30).get();
       const identity = [];
       const facts = [];
       const preferences = [];
@@ -177,7 +136,7 @@ export default async function handler(req, res) {
       console.error("Memory load error:", e);
     }
 
-    // SAVE USER MSG
+    // SAVE USER MSG APRÈS CHARGEMENT
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -203,10 +162,10 @@ export default async function handler(req, res) {
         role: "system",
         content: `You are AurX. ${memoryText? `Context: ${memoryText}` : ""}\n\n${systemPrompt}`.trim()
       },
-    ...history
+ ...history
     ];
 
-    console.log("[GPT] Sending", messages.length, "messages. Last 2:", messages.slice(-2));
+    console.log("[GPT] Sending", messages.length, "messages. Last:", history[history.length - 1]);
 
     // OPENROUTER
     const apiKey = process.env.OPENAI_API_KEY_1;
