@@ -22,29 +22,20 @@ async function ensureUserStructure(db, userId) {
 async function cleanupOldData(db, userId) {
   const limit = 5 * 24 * 60 * 60 * 1000;
   const now = Date.now();
-
-  const msgSnap = await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .where("timestamp", "<", now - limit)
-    .get();
-
+  const msgSnap = await db.collection("users").doc(userId).collection("messages").where("timestamp", "<", now - limit).get();
   const msgBatch = db.batch();
   msgSnap.forEach((doc) => msgBatch.delete(doc.ref));
   await msgBatch.commit();
 
   const convRef = db.collection("conversations").doc(userId);
   const convSnap = await convRef.get();
-
   if (convSnap.exists) {
     const conversations = convSnap.data().conversations || [];
     const filtered = conversations.filter(c => {
       const lastUpdate = c.updatedAt || c.date || 0;
       return now - lastUpdate <= limit;
     });
-
-    if (filtered.length !== conversations.length) {
+    if (filtered.length!== conversations.length) {
       await convRef.set({ conversations: filtered });
     }
   }
@@ -54,11 +45,10 @@ export default async function handler(req, res) {
   try {
     setCors(res);
     if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+    if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
-
     let userId = "guest_global";
     if (session) {
       try {
@@ -69,9 +59,8 @@ export default async function handler(req, res) {
 
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
     } catch {}
-
     const message = body.message?.trim();
     const convId = body.convId;
 
@@ -79,11 +68,9 @@ export default async function handler(req, res) {
     if (!convId) return res.status(400).json({ error: "Missing convId" });
 
     const now = Date.now();
-
-    // 1. Initialisation de la structure de l'utilisateur
     await ensureUserStructure(db, userId);
 
-    // 2. Extraction et sauvegarde de la mémoire (en arrière-plan pour ne pas bloquer)
+    // MEMORY SAVE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -93,51 +80,62 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // 3. Récupération de l'historique
+    // HISTORY - CHARGE D'ABORD
     let history = [];
     try {
       const snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .limit(50)
-        .get();
+    .collection("users")
+    .doc(userId)
+    .collection("messages")
+    .where("convId", "==", convId)
+    .limit(50)
+    .get();
 
       const docs = snap.docs
-        .map(doc => ({ ...doc.data(), id: doc.id }))
-        .sort((a, b) => a.timestamp - b.timestamp);
+    .map(doc => ({...doc.data(), id: doc.id }))
+    .sort((a, b) => a.timestamp - b.timestamp);
 
-      history = docs.map(d => ({
-        role: d.role,
-        content: d.text
-      }));
+      docs.forEach(d => {
+        history.push({
+          role: d.role,
+          content: d.text
+        });
+      });
+
+      console.log(`[HISTORY] UserId: ${userId} | ConvId: ${convId} | Loaded ${history.length} messages`);
     } catch (e) {
       console.error("History load error:", e);
     }
 
     history.push({ role: "user", content: message });
 
-    // 4. Récupération des souvenirs (Mémoire à long terme)
+    // MEMORY LOAD
     let memoryText = "";
+    let userName = null;
     try {
-      const memSnap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("memory")
-        .limit(3).get(); // Directement limité à 3 pour optimiser
-
+      const memSnap = await db.collection("users").doc(userId).collection("memory").limit(30).get();
+      const identity = [];
       const facts = [];
+      const preferences = [];
+
       memSnap.forEach(doc => {
-        facts.push(doc.data().value);
+        const d = doc.data();
+        if (d.type === "identity" && d.key === "name") userName = d.value;
+        if (d.type === "identity") identity.push(d.value);
+        else if (d.type === "preference") preferences.push(d.value);
+        else facts.push(d.value);
       });
 
-      memoryText = facts.join(" | ");
+      const memoryParts = [];
+      if (identity.length) memoryParts.push(`User: ${identity[0]}`);
+      if (facts.length) memoryParts.push(`Facts: ${facts.slice(0, 3).join(", ")}`);
+      if (preferences.length) memoryParts.push(`Likes: ${preferences.slice(0, 2).join(", ")}`);
+      memoryText = memoryParts.join(" | ");
     } catch (e) {
       console.error("Memory load error:", e);
     }
 
-    // Sauvegarde immédiate du message utilisateur en DB
+    // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -145,26 +143,36 @@ export default async function handler(req, res) {
       convId
     });
 
-    // 5. Préparation du System Prompt (Correction : Intégration de la mémoire !)
-    let systemPrompt = buildPrompt();
-    if (memoryText) {
-      systemPrompt += `\n\n[Context / User Memories]: ${memoryText}`;
+    // CONVERSATIONS
+    const convRef = db.collection("conversations").doc(userId);
+    const convSnap = await convRef.get();
+    let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+    let currentConv = conversations.find(c => c.id === convId);
+    if (!currentConv) {
+      currentConv = { id: convId, title: message.slice(0, 40), messages: [], date: now, updatedAt: now };
+      conversations.unshift(currentConv);
     }
+    currentConv.messages.push({ text: message, type: "user", timestamp: now });
 
+    // PROMPT
+    const systemPrompt = buildPrompt();
     const messages = [
-      { role: "system", content: systemPrompt },
-      ...history
+      {
+        role: "system",
+        content: `You are AurX. ${memoryText? `Context: ${memoryText}` : ""}\n\n${systemPrompt}`.trim()
+      },
+ ...history
     ];
 
-    console.log("[GPT] Streaming", messages.length);
+    console.log("[GPT] Streaming", messages.length, "messages");
 
-    // 6. Configuration des Headers SSE pour le Streaming
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+    // SSE HEADERS
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
+    // OPENROUTER STREAM
     const apiKey = process.env.OPENAI_API_KEY_1;
-
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -181,14 +189,15 @@ export default async function handler(req, res) {
       })
     });
 
-    if (!response.ok || !response.body) {
+    if (!response.ok) {
       res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
-      return res.end();
+      res.end();
+      return;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let fullReply = "";
+    let fullReply = '';
 
     try {
       while (true) {
@@ -196,56 +205,39 @@ export default async function handler(req, res) {
         if (done) break;
 
         const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        const lines = chunk.split('\n').filter(line => line.trim());
 
         for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-
-          const data = line.replace("data: ", "").trim();
-          if (data === "[DONE]") continue;
-
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-
-            if (content) {
-              fullReply += content;
-              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              res.write(`data: [DONE]\n\n`);
+              break;
             }
-          } catch {}
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              if (content) {
+                fullReply += content;
+                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+              }
+            } catch (e) {}
+          }
         }
       }
     } catch (e) {
-      console.error("Stream error:", e);
+      console.error('Stream error:', e);
+      res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
-    // 7. TOUTES LES SAUVEGARDES DOIVENT ÊTRE FAITES AVANT RES.END()
+    res.end();
+
+    // SAVE ASSISTANT MSG APRÈS LE STREAM
     const replyTime = Date.now();
-
-    const convRef = db.collection("conversations").doc(userId);
-    const convSnap = await convRef.get();
-    let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
-
-    let currentConv = conversations.find(c => c.id === convId);
-    if (!currentConv) {
-      currentConv = {
-        id: convId,
-        title: message.slice(0, 40),
-        messages: [],
-        date: now,
-        updatedAt: now
-      };
-      conversations.unshift(currentConv);
-    }
-
-    // On pousse le message utilisateur et bot dans l'historique global de la conv
-    if (!currentConv.messages.some(m => m.timestamp === now && m.type === "user")) {
-      currentConv.messages.push({ text: message, type: "user", timestamp: now });
-    }
     currentConv.messages.push({ text: fullReply, type: "bot", timestamp: replyTime });
     currentConv.updatedAt = replyTime;
-
-    // Écritures finales synchronisées
+    if (conversations.length > 30) conversations = conversations.slice(0, 30);
     await convRef.set({ conversations });
 
     await db.collection("users").doc(userId).collection("messages").add({
@@ -255,10 +247,7 @@ export default async function handler(req, res) {
       convId
     });
 
-    // On lance le nettoyage et ENFIN on ferme la réponse HTTP
-    await cleanupOldData(db, userId).catch(console.error);
-    
-    res.end();
+    cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
   } catch (err) {
     console.error("Chat error:", err);
