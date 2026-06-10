@@ -1,4 +1,4 @@
-import { buildPrompt } from "../lib/buildPrompt.js";
+import { buildPrompt } from "../lib/Prompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
