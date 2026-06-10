@@ -18,7 +18,6 @@ export default async function handler(req, res) {
     if (req.method !== "POST")
       return res.status(405).json({ error: "Method not allowed" });
 
-    // 🔐 USER
     const cookies = parse(req.headers.cookie || "");
     let userId = "guest_global";
 
@@ -43,7 +42,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // 🧠 MEMORY SAVE
+    // MEMORY SAVE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length) {
@@ -53,7 +52,7 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // 📜 HISTORY (20 LAST MESSAGES)
+    // HISTORY (20 LAST MESSAGES)
     const snap = await db
       .collection("users")
       .doc(userId)
@@ -72,7 +71,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // 🧠 MEMORY LOAD
+    // MEMORY LOAD
     const memSnap = await db
       .collection("users")
       .doc(userId)
@@ -85,7 +84,7 @@ export default async function handler(req, res) {
       .slice(0, 3)
       .join(" | ");
 
-    // 💾 SAVE USER MESSAGE
+    // SAVE USER MESSAGE (IMPORTANT)
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -93,7 +92,7 @@ export default async function handler(req, res) {
       convId,
     });
 
-    // 🤖 SYSTEM PROMPT
+    // SYSTEM PROMPT
     const systemPrompt = buildPrompt();
 
     const messages = [
@@ -104,7 +103,7 @@ export default async function handler(req, res) {
       ...history,
     ];
 
-    // 🌊 STREAM HEADERS
+    // STREAM HEADERS
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -138,7 +137,6 @@ export default async function handler(req, res) {
 
     let fullReply = "";
 
-    // 🌊 STREAM LOOP
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -149,7 +147,7 @@ export default async function handler(req, res) {
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
 
-        const data = line.replace("data: ", "");
+        const data = line.slice(6);
         if (data === "[DONE]") continue;
 
         try {
@@ -164,10 +162,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 🔥 IMPORTANT: END STREAM FIRST
-    res.end();
-
-    // 💾 SAVE BOT MESSAGE (SAFE)
+    // IMPORTANT: SAVE BEFORE END
     const replyTime = Date.now();
 
     const convRef = db.collection("conversations").doc(userId);
@@ -177,45 +172,50 @@ export default async function handler(req, res) {
       ? convSnap.data().conversations || []
       : [];
 
-    let index = conversations.findIndex((c) => c.id === convId);
+    let currentConv = conversations.find((c) => c.id === convId);
 
-    if (index === -1) {
-      conversations.unshift({
+    if (!currentConv) {
+      currentConv = {
         id: convId,
         title: message.slice(0, 40),
         messages: [],
-        date: replyTime,
-        updatedAt: replyTime,
-      });
-      index = 0;
+        date: now,
+        updatedAt: now,
+      };
+      conversations.unshift(currentConv);
     }
 
-    const conv = conversations[index];
+    // USER MESSAGE (IMPORTANT FOR UI + RELOAD)
+    currentConv.messages.push({
+      text: message,
+      type: "user",
+      timestamp: now,
+    });
 
-    const updatedConv = {
-      ...conv,
-      messages: [
-        ...(conv.messages || []),
-        {
-          text: fullReply || "",
-          type: "bot",
-          timestamp: replyTime,
-        },
-      ],
-      updatedAt: replyTime,
-    };
+    // BOT MESSAGE (FIXED)
+    currentConv.messages.push({
+      text: fullReply || "",
+      type: "bot",
+      timestamp: replyTime,
+    });
 
-    conversations[index] = updatedConv;
+    currentConv.updatedAt = replyTime;
+
+    if (conversations.length > 30) {
+      conversations = conversations.slice(0, 30);
+    }
 
     await convRef.set({ conversations });
 
-    // backup message log
     await db.collection("users").doc(userId).collection("messages").add({
       role: "assistant",
       text: fullReply || "",
       timestamp: replyTime,
       convId,
     });
+
+    // END STREAM LAST (IMPORTANT FIX)
+    res.end();
   } catch (err) {
     console.error("Chat error:", err);
 
