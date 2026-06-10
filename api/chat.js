@@ -80,9 +80,10 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
+    // 1. Initialisation de la structure de l'utilisateur
     await ensureUserStructure(db, userId);
 
-    // MEMORY SAVE
+    // 2. Extraction et sauvegarde de la mémoire (en arrière-plan pour ne pas bloquer)
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -92,7 +93,7 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY
+    // 3. Récupération de l'historique
     let history = [];
     try {
       const snap = await db
@@ -117,28 +118,26 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD
+    // 4. Récupération des souvenirs (Mémoire à long terme)
     let memoryText = "";
     try {
       const memSnap = await db
         .collection("users")
         .doc(userId)
         .collection("memory")
-        .limit(30)
-        .get();
+        .limit(3).get(); // Directement limité à 3 pour optimiser
 
       const facts = [];
       memSnap.forEach(doc => {
-        const d = doc.data();
-        facts.push(d.value);
+        facts.push(doc.data().value);
       });
 
-      memoryText = facts.slice(0, 3).join(" | ");
+      memoryText = facts.join(" | ");
     } catch (e) {
       console.error("Memory load error:", e);
     }
 
-    // SAVE USER MSG
+    // Sauvegarde immédiate du message utilisateur en DB
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -146,40 +145,20 @@ export default async function handler(req, res) {
       convId
     });
 
-    // CONVERSATION UPDATE
-    const convRef = db.collection("conversations").doc(userId);
-    const convSnap = await convRef.get();
-
-    let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
-
-    let currentConv = conversations.find(c => c.id === convId);
-    if (!currentConv) {
-      currentConv = {
-        id: convId,
-        title: message.slice(0, 40),
-        messages: [],
-        date: now,
-        updatedAt: now
-      };
-      conversations.unshift(currentConv);
+    // 5. Préparation du System Prompt (Correction : Intégration de la mémoire !)
+    let systemPrompt = buildPrompt();
+    if (memoryText) {
+      systemPrompt += `\n\n[Context / User Memories]: ${memoryText}`;
     }
 
-    currentConv.messages.push({ text: message, type: "user", timestamp: now });
-
-    // ✅ SYSTEM PROMPT CLEAN (ONLY MODULE)
-    const systemPrompt = buildPrompt();
-
     const messages = [
-      {
-        role: "system",
-        content: systemPrompt
-      },
+      { role: "system", content: systemPrompt },
       ...history
     ];
 
     console.log("[GPT] Streaming", messages.length);
 
-    // SSE
+    // 6. Configuration des Headers SSE pour le Streaming
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -209,7 +188,6 @@ export default async function handler(req, res) {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
     let fullReply = "";
 
     try {
@@ -223,7 +201,7 @@ export default async function handler(req, res) {
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
 
-          const data = line.replace("data: ", "");
+          const data = line.replace("data: ", "").trim();
           if (data === "[DONE]") continue;
 
           try {
@@ -241,19 +219,33 @@ export default async function handler(req, res) {
       console.error("Stream error:", e);
     }
 
-    res.end();
-
-    // SAVE BOT
+    // 7. TOUTES LES SAUVEGARDES DOIVENT ÊTRE FAITES AVANT RES.END()
     const replyTime = Date.now();
 
-    currentConv.messages.push({
-      text: fullReply,
-      type: "bot",
-      timestamp: replyTime
-    });
+    const convRef = db.collection("conversations").doc(userId);
+    const convSnap = await convRef.get();
+    let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
 
+    let currentConv = conversations.find(c => c.id === convId);
+    if (!currentConv) {
+      currentConv = {
+        id: convId,
+        title: message.slice(0, 40),
+        messages: [],
+        date: now,
+        updatedAt: now
+      };
+      conversations.unshift(currentConv);
+    }
+
+    // On pousse le message utilisateur et bot dans l'historique global de la conv
+    if (!currentConv.messages.some(m => m.timestamp === now && m.type === "user")) {
+      currentConv.messages.push({ text: message, type: "user", timestamp: now });
+    }
+    currentConv.messages.push({ text: fullReply, type: "bot", timestamp: replyTime });
     currentConv.updatedAt = replyTime;
 
+    // Écritures finales synchronisées
     await convRef.set({ conversations });
 
     await db.collection("users").doc(userId).collection("messages").add({
@@ -263,7 +255,10 @@ export default async function handler(req, res) {
       convId
     });
 
-    cleanupOldData(db, userId).catch(console.error);
+    // On lance le nettoyage et ENFIN on ferme la réponse HTTP
+    await cleanupOldData(db, userId).catch(console.error);
+    
+    res.end();
 
   } catch (err) {
     console.error("Chat error:", err);
