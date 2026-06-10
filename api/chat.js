@@ -1,4 +1,3 @@
-// IMPORTANT: buildPrompt OK
 import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
@@ -16,21 +15,24 @@ export default async function handler(req, res) {
   try {
     setCors(res);
     if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+    if (req.method !== "POST")
+      return res.status(405).json({ error: "Method not allowed" });
 
+    // 🔐 USER
     const cookies = parse(req.headers.cookie || "");
     let userId = "guest_global";
 
     if (cookies.aurx_session) {
       try {
-        const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
+        const user = JSON.parse(
+          Buffer.from(cookies.aurx_session, "base64").toString()
+        );
         userId = user.sid || user.id || "guest_global";
       } catch {}
     }
 
-    const body = typeof req.body === "string"
-      ? JSON.parse(req.body)
-      : req.body || {};
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
     const message = body.message?.trim();
     const convId = body.convId;
@@ -41,7 +43,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // MEMORY SAVE
+    // 🧠 MEMORY SAVE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length) {
@@ -51,7 +53,7 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY (⚠️ LIMIT 20 MESSAGES)
+    // 📜 HISTORY (20 LAST MESSAGES)
     const snap = await db
       .collection("users")
       .doc(userId)
@@ -61,13 +63,16 @@ export default async function handler(req, res) {
       .get();
 
     let history = snap.docs
-      .map(d => d.data())
+      .map((d) => d.data())
       .sort((a, b) => a.timestamp - b.timestamp)
-      .map(d => ({ role: d.role, content: d.text }));
+      .map((d) => ({
+        role: d.role,
+        content: d.text,
+      }));
 
     history.push({ role: "user", content: message });
 
-    // MEMORY SIMPLE
+    // 🧠 MEMORY LOAD
     const memSnap = await db
       .collection("users")
       .doc(userId)
@@ -76,49 +81,52 @@ export default async function handler(req, res) {
       .get();
 
     const memoryText = memSnap.docs
-      .map(d => d.data().value)
+      .map((d) => d.data().value)
       .slice(0, 3)
       .join(" | ");
 
-    // SAVE USER MSG
+    // 💾 SAVE USER MESSAGE
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
       timestamp: now,
-      convId
+      convId,
     });
 
-    // SYSTEM PROMPT
+    // 🤖 SYSTEM PROMPT
     const systemPrompt = buildPrompt();
 
     const messages = [
       {
         role: "system",
-        content: systemPrompt
+        content: systemPrompt,
       },
-      ...history
+      ...history,
     ];
 
-    // SSE
+    // 🌊 STREAM HEADERS
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
-        "HTTP-Referer": "https://aurx.vercel.app",
-        "X-Title": "AurX"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages,
-        stream: true,
-        temperature: 0.7
-      })
-    });
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
+          "HTTP-Referer": "https://aurx.vercel.app",
+          "X-Title": "AurX",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages,
+          stream: true,
+          temperature: 0.7,
+        }),
+      }
+    );
 
     if (!response.ok || !response.body) {
       res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
@@ -130,6 +138,7 @@ export default async function handler(req, res) {
 
     let fullReply = "";
 
+    // 🌊 STREAM LOOP
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -155,40 +164,65 @@ export default async function handler(req, res) {
       }
     }
 
-    // ⚠️ IMPORTANT: FLUSH FIRST
+    // 🔥 IMPORTANT: END STREAM FIRST
     res.end();
 
-    // SAFE FIRESTORE SAVE (after stream close)
+    // 💾 SAVE BOT MESSAGE (SAFE)
     const replyTime = Date.now();
 
-    const userRef = db.collection("users").doc(userId);
     const convRef = db.collection("conversations").doc(userId);
+    const convSnap = await convRef.get();
 
-    await userRef.collection("messages").add({
+    let conversations = convSnap.exists
+      ? convSnap.data().conversations || []
+      : [];
+
+    let index = conversations.findIndex((c) => c.id === convId);
+
+    if (index === -1) {
+      conversations.unshift({
+        id: convId,
+        title: message.slice(0, 40),
+        messages: [],
+        date: replyTime,
+        updatedAt: replyTime,
+      });
+      index = 0;
+    }
+
+    const conv = conversations[index];
+
+    const updatedConv = {
+      ...conv,
+      messages: [
+        ...(conv.messages || []),
+        {
+          text: fullReply || "",
+          type: "bot",
+          timestamp: replyTime,
+        },
+      ],
+      updatedAt: replyTime,
+    };
+
+    conversations[index] = updatedConv;
+
+    await convRef.set({ conversations });
+
+    // backup message log
+    await db.collection("users").doc(userId).collection("messages").add({
       role: "assistant",
       text: fullReply || "",
       timestamp: replyTime,
-      convId
+      convId,
     });
-
-    // SAFE UPDATE (no overwrite bug)
-    await convRef.set({
-      conversations: [
-        {
-          id: convId,
-          updatedAt: replyTime,
-          lastMessage: fullReply?.slice(0, 80) || ""
-        }
-      ]
-    }, { merge: true });
-
   } catch (err) {
     console.error("Chat error:", err);
 
     if (!res.headersSent) {
       res.status(500).json({
         error: "Server crash",
-        details: err.message
+        details: err.message,
       });
     }
   }
