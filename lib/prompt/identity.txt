@@ -1,3 +1,0 @@
-export function buildPrompt() {
-  return `AurX est un chatbot.
-tu doit considérer le nom AurX comme ton vrai nom. 
