@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // 2. SSE HEADERS IMMÉDIATEMENT - AVANT TOUT
+  // 2. SSE HEADERS IMMÉDIATEMENT
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -30,6 +30,13 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
       res.write(`data: [DONE]\n\n`);
       res.end();
+    } catch {}
+  };
+
+  const write = (obj) => {
+    try {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      if (res.flush) res.flush();
     } catch {}
   };
 
@@ -48,6 +55,8 @@ export default async function handler(req, res) {
     if (!message) return sendError("Missing message");
     if (!convId) return sendError("Missing convId");
 
+    console.log("[REQ] Message:", message.slice(0, 50));
+
     // 4. USER
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
@@ -61,7 +70,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // 5. DB - TOUT EN TRY CATCH POUR PAS CASSER LE STREAM
+    // 5. DB - TOUT EN TRY CATCH
     try {
       await db.collection("users").doc(userId).set({ createdAt: now }, { merge: true });
     } catch (e) {
@@ -78,22 +87,23 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY
+    // HISTORY - LIMITE À 10 POUR ÉVITER OVERFLOW
     let history = [];
     try {
       const snap = await db
-     .collection("users")
-     .doc(userId)
-     .collection("messages")
-     .where("convId", "==", convId)
-     .orderBy("timestamp", "desc")
-     .limit(20)
-     .get();
+    .collection("users")
+    .doc(userId)
+    .collection("messages")
+    .where("convId", "==", convId)
+    .orderBy("timestamp", "desc")
+    .limit(10)
+    .get();
 
       history = snap.docs.reverse().map(d => ({
         role: d.data().role,
         content: d.data().text
       }));
+      console.log("[HISTORY] Loaded:", history.length);
     } catch (e) {
       console.error("History load error:", e);
     }
@@ -104,7 +114,7 @@ export default async function handler(req, res) {
     let userName = null;
     let identity = [], facts = [], preferences = [];
     try {
-      const memSnap = await db.collection("users").doc(userId).collection("memory").get();
+      const memSnap = await db.collection("users").doc(userId).collection("memory").limit(20).get();
       memSnap.forEach(doc => {
         const d = doc.data();
         if (d.type === "identity" && d.key === "name") userName = d.value;
@@ -112,6 +122,7 @@ export default async function handler(req, res) {
         else if (d.type === "preference") preferences.push(d.value);
         else facts.push(d.value);
       });
+      console.log("[MEMORY] Name:", userName);
     } catch (e) {
       console.error("Memory load error:", e);
     }
@@ -128,27 +139,36 @@ export default async function handler(req, res) {
       console.error("Save user msg error:", e);
     }
 
-    // 6. PROMPT
-    const basePrompt = buildPrompt();
+    // 6. PROMPT - FIX: FALLBACK SI BUILDPROMPT VIDE
+    let basePrompt = "";
+    try {
+      basePrompt = buildPrompt() || "Tu es un assistant IA utile.";
+    } catch (e) {
+      console.error("buildPrompt error:", e);
+      basePrompt = "Tu es un assistant IA utile.";
+    }
+
     let memoryInjection = "";
-    if (userName) memoryInjection += `CRITICAL: The user's name is ${userName}. Use it when appropriate.\n\n`;
-    if (identity.length) memoryInjection += `User identity: ${identity.join(", ")}.\n\n`;
-    if (facts.length) memoryInjection += `Known facts: ${facts.slice(0, 5).join(", ")}.\n\n`;
-    if (preferences.length) memoryInjection += `User preferences: ${preferences.slice(0, 3).join(", ")}.\n\n`;
+    if (userName) memoryInjection += `User name: ${userName}\n`;
+    if (identity.length) memoryInjection += `Identity: ${identity.slice(0, 2).join(", ")}\n`;
+    if (facts.length) memoryInjection += `Facts: ${facts.slice(0, 3).join(", ")}\n`;
+    if (preferences.length) memoryInjection += `Preferences: ${preferences.slice(0, 2).join(", ")}\n`;
 
     const finalSystemPrompt = memoryInjection
-    ? `${memoryInjection}---\n\n${basePrompt}`
+   ? `${memoryInjection}\n---\n${basePrompt}`
       : basePrompt;
+
+    console.log("[PROMPT] Length:", finalSystemPrompt.length);
 
     const messages = [
       { role: "system", content: finalSystemPrompt },
-   ...history
+  ...history
     ];
-
-    console.log("[GPT] Streaming", messages.length, "messages");
 
     // 7. OPENROUTER
     const apiKey = process.env.OPENAI_API_KEY_1;
+    console.log("[API] Key exists:",!!apiKey);
+
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -165,18 +185,21 @@ export default async function handler(req, res) {
       })
     });
 
+    console.log("[API] Status:", response.status);
+
     if (!response.ok ||!response.body) {
       const err = await response.text();
       console.error("OpenRouter error:", response.status, err);
-      return sendError("AI service error");
+      return sendError(`AI error ${response.status}`);
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullReply = '';
     let buffer = '';
+    let gotContent = false;
 
-    // 8. STREAM LOOP - FIX: continue au lieu de break
+    // 8. STREAM LOOP
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -190,16 +213,16 @@ export default async function handler(req, res) {
           if (!line.trim() ||!line.startsWith('data: ')) continue;
 
           const data = line.slice(6).trim();
-          if (data === '[DONE]') continue; // FIX CRITIQUE
+          if (data === '[DONE]') continue;
 
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content;
 
             if (content) {
+              gotContent = true;
               fullReply += content;
-              res.write(`data: ${JSON.stringify({ content })}\n\n`);
-              if (res.flush) res.flush();
+              write({ content });
             }
           } catch (e) {
             console.error("Parse error:", e);
@@ -208,8 +231,11 @@ export default async function handler(req, res) {
       }
     } catch (e) {
       console.error('Stream error:', e);
-      res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
+      write({ error: "Stream interrupted" });
     }
+
+    console.log("[STREAM] Got content:", gotContent, "Length:", fullReply.length);
+    if (!gotContent) write({ error: "Empty response from AI" });
 
     // 9. SAVE BOT MSG
     const replyTime = Date.now();
@@ -242,7 +268,7 @@ export default async function handler(req, res) {
       console.error("DB save error:", dbErr);
     }
 
-    res.write(`data: [DONE]\n\n`);
+    write("[DONE]");
     res.end();
 
   } catch (err) {
