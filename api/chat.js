@@ -91,13 +91,13 @@ export default async function handler(req, res) {
     let history = [];
     try {
       const snap = await db
-    .collection("users")
-    .doc(userId)
-    .collection("messages")
-    .where("convId", "==", convId)
-    .orderBy("timestamp", "desc")
-    .limit(10)
-    .get();
+   .collection("users")
+   .doc(userId)
+   .collection("messages")
+   .where("convId", "==", convId)
+   .orderBy("timestamp", "desc")
+   .limit(10)
+   .get();
 
       history = snap.docs.reverse().map(d => ({
         role: d.data().role,
@@ -139,30 +139,41 @@ export default async function handler(req, res) {
       console.error("Save user msg error:", e);
     }
 
-    // 6. PROMPT - FIX: FALLBACK SI BUILDPROMPT VIDE
+    // 6. PROMPT - FIX COMPLET + DEBUG
     let basePrompt = "";
     try {
-      basePrompt = buildPrompt() || "Tu es un assistant IA utile.";
+      const result = buildPrompt();
+      console.log("[PROMPT] buildPrompt type:", typeof result);
+
+      // Gère cas où buildPrompt est async ou renvoie undefined
+      basePrompt = typeof result === 'string'? result : String(result || "");
+
+      if (!basePrompt.trim()) {
+        console.error("[PROMPT] buildPrompt returned empty!");
+        basePrompt = "Tu es AurX, un assistant IA français. Tu es direct, utile, et tu retiens le prénom de l'utilisateur pour personnaliser tes réponses.";
+      }
     } catch (e) {
-      console.error("buildPrompt error:", e);
-      basePrompt = "Tu es un assistant IA utile.";
+      console.error("[PROMPT] buildPrompt crashed:", e);
+      basePrompt = "Tu es AurX, un assistant IA français. Tu es direct, utile, et tu retiens le prénom de l'utilisateur pour personnaliser tes réponses.";
     }
 
     let memoryInjection = "";
-    if (userName) memoryInjection += `User name: ${userName}\n`;
-    if (identity.length) memoryInjection += `Identity: ${identity.slice(0, 2).join(", ")}\n`;
-    if (facts.length) memoryInjection += `Facts: ${facts.slice(0, 3).join(", ")}\n`;
-    if (preferences.length) memoryInjection += `Preferences: ${preferences.slice(0, 2).join(", ")}\n`;
+    if (userName) memoryInjection += `IMPORTANT: Le prénom de l'utilisateur est ${userName}. Utilise-le naturellement dans tes réponses.\n`;
+    if (identity.length) memoryInjection += `Identité: ${identity.slice(0, 2).join(", ")}\n`;
+    if (facts.length) memoryInjection += `Faits connus: ${facts.slice(0, 3).join(", ")}\n`;
+    if (preferences.length) memoryInjection += `Préférences: ${preferences.slice(0, 2).join(", ")}\n`;
 
-    const finalSystemPrompt = memoryInjection
-   ? `${memoryInjection}\n---\n${basePrompt}`
+    const finalSystemPrompt = memoryInjection.trim()
+  ? `${memoryInjection}\n\n---RÈGLES SYSTÈME---\n${basePrompt}`
       : basePrompt;
 
-    console.log("[PROMPT] Length:", finalSystemPrompt.length);
+    console.log("[PROMPT] Final length:", finalSystemPrompt.length);
+    console.log("[PROMPT] Has name:",!!userName, userName);
+    console.log("[PROMPT] Preview:", finalSystemPrompt.slice(0, 150));
 
     const messages = [
       { role: "system", content: finalSystemPrompt },
-  ...history
+ ...history
     ];
 
     // 7. OPENROUTER
