@@ -27,20 +27,25 @@ function write(res, obj) {
   } catch {}
 }
 
+function closeStream(res) {
+  try {
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+  } catch {}
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
 
-  // SSE HEADERS (IMPORTANT Vercel)
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
 
   try {
-    const body =
-      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
     const message = body.message?.trim();
     const convId = body.convId;
@@ -48,7 +53,6 @@ export default async function handler(req, res) {
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
-    // USER ID
     const cookies = parse(req.headers.cookie || "");
     let userId = "guest_global";
 
@@ -62,16 +66,37 @@ export default async function handler(req, res) {
     }
 
     const now = Date.now();
+    const tenMinutesAgo = now - 10 * 60 * 1000;
 
-    // SAVE USER MESSAGE
-    await db.collection("users").doc(userId).collection("messages").add({
+    const messagesRef = db.collection("users").doc(userId).collection("messages");
+
+    // 1. SUPPRESSION DES ANCIENS MESSAGES DE PLUS DE 10 MINUTES
+    try {
+      const oldMessagesSnap = await messagesRef
+        .where("convId", "==", convId)
+        .where("timestamp", "<", tenMinutesAgo)
+        .get();
+
+      if (!oldMessagesSnap.empty) {
+        const batch = db.batch();
+        oldMessagesSnap.docs.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      console.error("Erreur lors du nettoyage des messages :", err);
+    }
+
+    // 2. ENREGISTREMENT DU NOUVEAU MESSAGE UTILISATEUR
+    await messagesRef.add({
       role: "user",
       text: message,
       timestamp: now,
       convId,
     });
 
-    // MEMORY EXTRACTION
+    // EXTRACTION MÉMOIRE PÉRENNE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -79,27 +104,34 @@ export default async function handler(req, res) {
       }
     } catch {}
 
-    // HISTORY (safe sort client-side)
+    // 3. RÉCUPÉRATION DE L'HISTORIQUE RÉCENT (Moins de 10 minutes)
     let history = [];
     try {
-      const snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
+      const snap = await messagesRef
         .where("convId", "==", convId)
         .get();
 
       history = snap.docs
         .map((d) => d.data())
         .sort((a, b) => a.timestamp - b.timestamp)
-        .slice(-20)
         .map((m) => ({
           role: m.role,
           content: m.text,
         }));
+
+      // Évite la duplication du message actuel s'il est déjà retourné par Firestore
+      if (
+        history.length > 0 &&
+        history[history.length - 1].content === message &&
+        history[history.length - 1].role === "user"
+      ) {
+        history.pop();
+      }
+
+      history = history.slice(-19);
     } catch {}
 
-    // MEMORY LOAD
+    // 4. CHARGEMENT DES DONNÉES DE MÉMOIRE PROFONDE
     let name = null;
     let facts = [];
     let prefs = [];
@@ -113,7 +145,6 @@ export default async function handler(req, res) {
 
       memSnap.forEach((doc) => {
         const d = doc.data();
-
         if (d.type === "identity" && d.key === "name") {
           name = d.value;
         } else if (d.type === "preference") {
@@ -124,25 +155,23 @@ export default async function handler(req, res) {
       });
     } catch {}
 
-    // 🔥 BUILD PROMPT (CORRECT INJECTION)
+    // 5. CORRECTION ET INJECTION DU SYSTEM PROMPT
     let basePrompt = "";
     try {
-      basePrompt = String(buildPrompt() || "");
+      // Si buildPrompt() prend des paramètres ou doit être exécuté proprement :
+      const customPrompt = buildPrompt();
+      basePrompt = customPrompt ? String(customPrompt) : "Tu es AurX, un assistant IA utile et précis.";
     } catch {
       basePrompt = "Tu es AurX, un assistant IA utile et précis.";
     }
 
     let memoryBlock = "";
-
     if (name) {
-      memoryBlock += `Nom utilisateur: ${name}\n`;
-      memoryBlock += `IMPORTANT: utilise son nom naturellement.\n`;
+      memoryBlock += `Nom utilisateur: ${name}\nIMPORTANT: utilise son nom naturellement.\n`;
     }
-
     if (facts.length) {
       memoryBlock += `Faits connus: ${facts.slice(0, 5).join(", ")}\n`;
     }
-
     if (prefs.length) {
       memoryBlock += `Préférences: ${prefs.slice(0, 5).join(", ")}\n`;
     }
@@ -157,7 +186,7 @@ export default async function handler(req, res) {
       { role: "user", content: message },
     ];
 
-    // OPENROUTER
+    // 6. APPEL OPENROUTER
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -219,16 +248,15 @@ export default async function handler(req, res) {
       return sendError(res, "Empty response from AI");
     }
 
-    // SAVE BOT MESSAGE
-    await db.collection("users").doc(userId).collection("messages").add({
+    // 7. ENREGISTREMENT DE LA RÉPONSE DE L'ASSISTANT
+    await messagesRef.add({
       role: "assistant",
       text: full,
       timestamp: Date.now(),
       convId,
     });
 
-    write(res, "[DONE]");
-    res.end();
+    closeStream(res);
   } catch (err) {
     console.error(err);
     sendError(res, "Server error");
