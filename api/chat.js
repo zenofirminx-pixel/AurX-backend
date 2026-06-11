@@ -13,17 +13,6 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-// Nettoie juste les caractères dangereux, lit RIEN en dur
-function safeString(str) {
-  if (!str) return "";
-  return String(str)
-   .replace(/\\/g, "\\\\")
-   .replace(/"/g, '\\"')
-   .replace(/\n/g, " ")
-   .replace(/\r/g, " ")
-   .trim();
-}
-
 async function ensureUserStructure(db, userId) {
   if (!userId) return;
   const userRef = db.collection("users").doc(userId);
@@ -83,7 +72,7 @@ export default async function handler(req, res) {
     const now = Date.now();
     await ensureUserStructure(db, userId);
 
-    // MEMORY SAVE - Extrait depuis le message user
+    // MEMORY SAVE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -93,17 +82,17 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY
+    // HISTORY - FIX: ORDERBY pour avoir les vrais derniers messages
     let history = [];
     try {
       const snap = await db
-     .collection("users")
-     .doc(userId)
-     .collection("messages")
-     .where("convId", "==", convId)
-     .orderBy("timestamp", "desc")
-     .limit(20)
-     .get();
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .where("convId", "==", convId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
 
       const docs = snap.docs.reverse();
 
@@ -122,7 +111,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - LECTURE 100% FIRESTORE
+    // MEMORY LOAD - FIX: STRUCTURE POUR INJECTION DIRECTE
     let userMemory = {
       name: null,
       identity: [],
@@ -134,7 +123,6 @@ export default async function handler(req, res) {
 
       memSnap.forEach(doc => {
         const d = doc.data();
-        // TOUT VIENT DE FIRESTORE ICI
         if (d.type === "identity" && d.key === "name") userMemory.name = d.value;
         if (d.type === "identity") userMemory.identity.push(d.value);
         else if (d.type === "preference") userMemory.preferences.push(d.value);
@@ -146,6 +134,7 @@ export default async function handler(req, res) {
       console.error("Memory load error:", e);
     }
 
+    // STRUCTURE UNIFIÉE USER MSG - FIX: mêmes champs que bot
     const userMsgData = {
       role: "user",
       type: "user",
@@ -155,28 +144,28 @@ export default async function handler(req, res) {
       convId
     };
 
+    // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT - INJECTION DEPUIS FIRESTORE UNIQUEMENT
-    const basePrompt = buildPrompt();
+    // PROMPT - FIX: ON INJECTE LA MÉMOIRE DIRECT SANS PASSER PAR BUILDPROMPT
+    const basePrompt = buildPrompt(); // ton buildPrompt original qui lit les.txt
 
     let memoryInjection = "";
     if (userMemory.name) {
-      const safeName = safeString(userMemory.name); // ← Juste nettoyage
-      memoryInjection += `USER_NAME: ${safeName}\n`;
-      memoryInjection += `RULE: If the user asks "comment je m'appelle", "quel est mon nom", or similar, reply: Tu t'appelles ${safeName}\n\n`;
+      memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this and use their name when appropriate.\n\n`;
     }
     if (userMemory.identity.length > 0) {
-      const safeIdentity = userMemory.identity.map(safeString).join(", ");
-      memoryInjection += `User identity: ${safeIdentity}.\n\n`;
+      memoryInjection += `User identity: ${userMemory.identity.join(", ")}.\n\n`;
     }
     if (userMemory.facts.length > 0) {
-      const safeFacts = userMemory.facts.slice(0, 5).map(safeString).join(", ");
-      memoryInjection += `Known facts: ${safeFacts}.\n\n`;
+      memoryInjection += `Known facts: ${userMemory.facts.slice(0, 5).join(", ")}.\n\n`;
+    }
+    if (userMemory.preferences.length > 0) {
+      memoryInjection += `User preferences: ${userMemory.preferences.slice(0, 3).join(", ")}.\n\n`;
     }
 
     const finalSystemPrompt = memoryInjection
-   ? `${memoryInjection}---\n\n${basePrompt}`
+     ? `${memoryInjection}---\n\n${basePrompt}`
       : basePrompt;
 
     const messages = [
@@ -184,15 +173,18 @@ export default async function handler(req, res) {
         role: "system",
         content: finalSystemPrompt
       },
-  ...history
+    ...history
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
+    console.log("[SYSTEM PROMPT PREVIEW]", finalSystemPrompt.substring(0, 300));
 
+    // SSE HEADERS
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // OPENROUTER STREAM
     const apiKey = process.env.OPENAI_API_KEY_1;
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -211,8 +203,6 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[OPENROUTER ERROR]", response.status, errorText);
       res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
       res.end();
       return;
@@ -251,8 +241,10 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
+    // FIX: SAVE AVANT res.end() POUR ÉVITER DISPARITION AU RELOAD
     const replyTime = Date.now();
 
+    // STRUCTURE UNIFIÉE BOT - MÊMES CHAMPS QUE USER
     const botMsgData = {
       role: "assistant",
       type: "bot",
@@ -263,8 +255,10 @@ export default async function handler(req, res) {
     };
 
     try {
+      // 1. Save dans messages pour reload
       await db.collection("users").doc(userId).collection("messages").add(botMsgData);
 
+      // 2. Update conversations avec transaction atomique
       const convRef = db.collection("conversations").doc(userId);
       await db.runTransaction(async (t) => {
         const convSnap = await t.get(convRef);
