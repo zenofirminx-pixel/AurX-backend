@@ -13,241 +13,224 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
+function sendError(res, msg) {
+  try {
+    res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+  } catch {}
+}
+
+function write(res, obj) {
+  try {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  } catch {}
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Method not allowed" });
 
+  // SSE HEADERS (IMPORTANT Vercel)
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-
-  const sendError = (msg) => {
-    try {
-      res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
-      res.write(`data: [DONE]\n\n`);
-      res.end();
-    } catch {}
-  };
-
-  const write = (obj) => {
-    try {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
-      if (res.flush) res.flush();
-    } catch {}
-  };
 
   try {
-    let body = {};
-    try {
-      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
-    } catch {
-      return sendError("Invalid JSON");
-    }
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
     const message = body.message?.trim();
     const convId = body.convId;
 
-    if (!message) return sendError("Missing message");
-    if (!convId) return sendError("Missing convId");
+    if (!message) return sendError(res, "Missing message");
+    if (!convId) return sendError(res, "Missing convId");
 
-    // USER
+    // USER ID
     const cookies = parse(req.headers.cookie || "");
-    const session = cookies.aurx_session;
     let userId = "guest_global";
-    if (session) {
+
+    if (cookies.aurx_session) {
       try {
-        const user = JSON.parse(Buffer.from(session, "base64").toString());
+        const user = JSON.parse(
+          Buffer.from(cookies.aurx_session, "base64").toString()
+        );
         userId = user.sid || user.id || "guest_global";
-      } catch (e) {
-        console.error("Session parse error:", e);
-      }
+      } catch {}
     }
 
-    console.log(" userId:", userId, "convId:", convId);
     const now = Date.now();
 
-    // SAVE USER MSG EN PREMIER
-    try {
-      await db.collection("users").doc(userId).collection("messages").add({
-        role: "user",
-        text: message,
-        timestamp: now,
-        convId
-      });
-      console.log(" User msg saved");
-    } catch (e) {
-      console.error("Save user msg error:", e);
-    }
+    // SAVE USER MESSAGE
+    await db.collection("users").doc(userId).collection("messages").add({
+      role: "user",
+      text: message,
+      timestamp: now,
+      convId,
+    });
 
-    // MEMORY SAVE
+    // MEMORY EXTRACTION
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
-        console.log("[MEMORY] Saved:", memories.length);
       }
-    } catch (e) {
-      console.error("Memory save error:", e);
-    }
+    } catch {}
 
-    // HISTORY - SANS ORDERBY POUR ÉVITER INDEX MANQUANT
+    // HISTORY (safe sort client-side)
     let history = [];
     try {
       const snap = await db
-  .collection("users")
-  .doc(userId)
-  .collection("messages")
-  .where("convId", "==", convId)
-  .get();
+        .collection("users")
+        .doc(userId)
+        .collection("messages")
+        .where("convId", "==", convId)
+        .get();
 
       history = snap.docs
-  .sort((a, b) => a.data().timestamp - b.data().timestamp)
-  .slice(-20)
-  .map(d => ({
-        role: d.data().role,
-        content: d.data().text
-      }));
-      console.log("[HISTORY] Loaded:", history.length);
-    } catch (e) {
-      console.error("History load error:", e);
-    }
-
-    // NE PAS PUSH - LE MESSAGE EST DÉJÀ DANS HISTORY
-    // history.push({ role: "user", content: message }); ← SUPPRIMÉ
+        .map((d) => d.data())
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .slice(-20)
+        .map((m) => ({
+          role: m.role,
+          content: m.text,
+        }));
+    } catch {}
 
     // MEMORY LOAD
-    let userName = null;
-    let identity = [], facts = [], preferences = [];
-    try {
-      const memSnap = await db.collection("users").doc(userId).collection("memory").limit(20).get();
-      memSnap.forEach(doc => {
-        const d = doc.data();
-        if (d.type === "identity" && d.key === "name") userName = d.value;
-        if (d.type === "identity") identity.push(d.value);
-        else if (d.type === "preference") preferences.push(d.value);
-        else facts.push(d.value);
-      });
-      console.log("[MEMORY] Name:", userName, "Total:", memSnap.size);
-    } catch (e) {
-      console.error("Memory load error:", e);
-    }
+    let name = null;
+    let facts = [];
+    let prefs = [];
 
-    // PROMPT
+    try {
+      const memSnap = await db
+        .collection("users")
+        .doc(userId)
+        .collection("memory")
+        .get();
+
+      memSnap.forEach((doc) => {
+        const d = doc.data();
+
+        if (d.type === "identity" && d.key === "name") {
+          name = d.value;
+        } else if (d.type === "preference") {
+          prefs.push(d.value);
+        } else {
+          facts.push(d.value);
+        }
+      });
+    } catch {}
+
+    // 🔥 BUILD PROMPT (CORRECT INJECTION)
     let basePrompt = "";
     try {
-      const result = buildPrompt();
-      basePrompt = typeof result === 'string'? result : String(result || "");
-      if (!basePrompt.trim()) {
-        basePrompt = "Tu es AurX, un assistant IA français. Tu es direct, utile.";
-      }
-    } catch (e) {
-      console.error("[PROMPT] buildPrompt crashed:", e);
-      basePrompt = "Tu es AurX, un assistant IA français. Tu es direct, utile.";
+      basePrompt = String(buildPrompt() || "");
+    } catch {
+      basePrompt = "Tu es AurX, un assistant IA utile et précis.";
     }
 
-    let memoryInjection = "";
-    if (userName) memoryInjection += `IMPORTANT: Le prénom de l'utilisateur est ${userName}. Utilise-le naturellement.\n`;
-    if (identity.length) memoryInjection += `Identité: ${identity.slice(0, 2).join(", ")}\n`;
-    if (facts.length) memoryInjection += `Faits: ${facts.slice(0, 3).join(", ")}\n`;
-    if (preferences.length) memoryInjection += `Préférences: ${preferences.slice(0, 2).join(", ")}\n`;
+    let memoryBlock = "";
 
-    const finalSystemPrompt = memoryInjection.trim()
-? `${memoryInjection}\n\n---RÈGLES---\n${basePrompt}`
+    if (name) {
+      memoryBlock += `Nom utilisateur: ${name}\n`;
+      memoryBlock += `IMPORTANT: utilise son nom naturellement.\n`;
+    }
+
+    if (facts.length) {
+      memoryBlock += `Faits connus: ${facts.slice(0, 5).join(", ")}\n`;
+    }
+
+    if (prefs.length) {
+      memoryBlock += `Préférences: ${prefs.slice(0, 5).join(", ")}\n`;
+    }
+
+    const systemPrompt = memoryBlock
+      ? `${memoryBlock}\n---\n${basePrompt}`
       : basePrompt;
 
-    console.log("[PROMPT] Has name:",!!userName, "History:", history.length);
-
     const messages = [
-      { role: "system", content: finalSystemPrompt },
-...history
+      { role: "system", content: systemPrompt },
+      ...history,
+      { role: "user", content: message },
     ];
 
     // OPENROUTER
-    const apiKey = process.env.OPENAI_API_KEY_1;
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://aurx.vercel.app",
-        "X-Title": "AurX"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages,
-        stream: true,
-        temperature: 0.7
-      })
-    });
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
+          "HTTP-Referer": "https://aurx.vercel.app",
+          "X-Title": "AurX",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages,
+          stream: true,
+          temperature: 0.7,
+        }),
+      }
+    );
 
-    if (!response.ok ||!response.body) {
-      const err = await response.text();
-      console.error("OpenRouter error:", response.status, err);
-      return sendError(`AI error ${response.status}`);
+    if (!response.ok || !response.body) {
+      return sendError(res, "AI service error");
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let fullReply = '';
-    let buffer = '';
-    let gotContent = false;
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    let full = "";
+    let buffer = "";
+    let got = false;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        for (const line of lines) {
-          if (!line.trim() ||!line.startsWith('data: ')) continue;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') continue;
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
 
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
 
-            if (content) {
-              gotContent = true;
-              fullReply += content;
-              write({ content });
-            }
-          } catch (e) {
-            console.error("Parse error:", e);
+        try {
+          const json = JSON.parse(data);
+          const content = json.choices?.[0]?.delta?.content;
+
+          if (content) {
+            got = true;
+            full += content;
+            write(res, { content });
           }
-        }
+        } catch {}
       }
-    } catch (e) {
-      console.error('Stream error:', e);
-      write({ error: "Stream interrupted" });
     }
 
-    if (!gotContent) write({ error: "Empty response from AI" });
-
-    // SAVE BOT MSG
-    const replyTime = Date.now();
-    try {
-      await db.collection("users").doc(userId).collection("messages").add({
-        role: "assistant",
-        text: fullReply || "",
-        timestamp: replyTime,
-        convId,
-      });
-    } catch (dbErr) {
-      console.error("DB save error:", dbErr);
+    if (!got) {
+      return sendError(res, "Empty response from AI");
     }
 
-    write("[DONE]");
+    // SAVE BOT MESSAGE
+    await db.collection("users").doc(userId).collection("messages").add({
+      role: "assistant",
+      text: full,
+      timestamp: Date.now(),
+      convId,
+    });
+
+    write(res, "[DONE]");
     res.end();
-
   } catch (err) {
-    console.error("Server crash:", err);
-    sendError("Server error");
+    console.error(err);
+    sendError(res, "Server error");
   }
 }
