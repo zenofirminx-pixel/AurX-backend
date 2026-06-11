@@ -86,13 +86,13 @@ export default async function handler(req, res) {
     let history = [];
     try {
       const snap = await db
-       .collection("users")
-       .doc(userId)
-       .collection("messages")
-       .where("convId", "==", convId)
-       .orderBy("timestamp", "desc")
-       .limit(20)
-       .get();
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .where("convId", "==", convId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
 
       const docs = snap.docs.reverse();
 
@@ -111,7 +111,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - FIX: STRUCTURE POUR BUILDPROMPT
+    // MEMORY LOAD - FIX: STRUCTURE POUR INJECTION DIRECTE
     let userMemory = {
       name: null,
       identity: [],
@@ -119,7 +119,7 @@ export default async function handler(req, res) {
       preferences: []
     };
     try {
-      const memSnap = await db.collection("users").doc(userId).collection("memory").limit(30).get();
+      const memSnap = await db.collection("users").doc(userId).collection("memory").get();
 
       memSnap.forEach(doc => {
         const d = doc.data();
@@ -147,17 +147,37 @@ export default async function handler(req, res) {
     // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT - FIX: ON PASSE LA MÉMOIRE À BUILDPROMPT
-    const systemPrompt = buildPrompt(userMemory);
+    // PROMPT - FIX: ON INJECTE LA MÉMOIRE DIRECT SANS PASSER PAR BUILDPROMPT
+    const basePrompt = buildPrompt(); // ton buildPrompt original qui lit les.txt
+
+    let memoryInjection = "";
+    if (userMemory.name) {
+      memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this and use their name when appropriate.\n\n`;
+    }
+    if (userMemory.identity.length > 0) {
+      memoryInjection += `User identity: ${userMemory.identity.join(", ")}.\n\n`;
+    }
+    if (userMemory.facts.length > 0) {
+      memoryInjection += `Known facts: ${userMemory.facts.slice(0, 5).join(", ")}.\n\n`;
+    }
+    if (userMemory.preferences.length > 0) {
+      memoryInjection += `User preferences: ${userMemory.preferences.slice(0, 3).join(", ")}.\n\n`;
+    }
+
+    const finalSystemPrompt = memoryInjection
+     ? `${memoryInjection}---\n\n${basePrompt}`
+      : basePrompt;
+
     const messages = [
       {
         role: "system",
-        content: systemPrompt
+        content: finalSystemPrompt
       },
-     ...history
+    ...history
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
+    console.log("[SYSTEM PROMPT PREVIEW]", finalSystemPrompt.substring(0, 300));
 
     // SSE HEADERS
     res.setHeader('Content-Type', 'text/event-stream');
