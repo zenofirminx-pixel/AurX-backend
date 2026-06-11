@@ -24,13 +24,23 @@ function safeStr(str) {
  .trim();
 }
 
+async function ensureUserStructure(db, userId) {
+  if (!userId) return;
+  const userRef = db.collection("users").doc(userId);
+  const convRef = db.collection("conversations").doc(userId);
+  await Promise.all([
+    userRef.set({ createdAt: Date.now() }, { merge: true }),
+    convRef.set({ conversations: [] }, { merge: true })
+  ]);
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method!== "POST")
     return res.status(405).json({ error: "Method not allowed" });
 
-  // 1. SSE HEADERS IMMÉDIATEMENT - FIX CRASH
+  // 1. SSE HEADERS IMMÉDIATEMENT
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -69,8 +79,9 @@ export default async function handler(req, res) {
     }
 
     const now = Date.now();
+    await ensureUserStructure(db, userId);
 
-    // 3. MEMORY SAVE - ton extractMemory doit filtrer stopWords
+    // 3. MEMORY SAVE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length) {
@@ -100,7 +111,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // 5. MEMORY LOAD - EXTRACTION SAFE DEPUIS FIRESTORE
+    // 5. MEMORY LOAD - FIRESTORE UNIQUEMENT
     let userName = null;
     let prefs = [];
     let facts = [];
@@ -119,6 +130,7 @@ export default async function handler(req, res) {
         else if (d.type === "preference") prefs.push(d.value);
         else if (d.type === "fact") facts.push(d.value);
       });
+      console.log(`[MEMORY] User: ${userName || 'Unknown'} | Prefs: ${prefs.length} | Facts: ${facts.length}`);
     } catch (e) {
       console.error("Memory load error:", e);
     }
@@ -131,7 +143,7 @@ export default async function handler(req, res) {
       convId,
     });
 
-    // 7. PROMPT - INJECTION SAFE + RÈGLE BRUTALE POUR LE NOM
+    // 7. PROMPT - INJECTION SAFE
     const basePrompt = buildPrompt();
     let memoryCtx = "";
 
@@ -158,6 +170,7 @@ export default async function handler(req, res) {
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
+    console.log("[SYSTEM PROMPT]", systemPrompt.substring(0, 200));
 
     // 8. OPENROUTER STREAM
     const response = await fetch(
@@ -187,34 +200,41 @@ export default async function handler(req, res) {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let fullReply = "";
+    let fullReply = '';
+    let buffer = '';
 
-    // 9. STREAM LOOP
+    // 9. STREAM LOOP - FIX: continue au lieu de break
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n").filter(line => line.trim());
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6);
-          if (data === "[DONE]") break;
+          if (!line.trim() ||!line.startsWith('data: ')) continue;
+          
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue; // FIX: continue au lieu de break
 
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices?.[0]?.delta?.content;
+            
             if (content) {
               fullReply += content;
               res.write(`data: ${JSON.stringify({ content })}\n\n`);
+              if (res.flush) res.flush();
             }
-          } catch {}
+          } catch (e) {
+            console.error("Parse error:", e);
+          }
         }
       }
     } catch (e) {
-      console.error("Stream error:", e);
+      console.error('Stream error:', e);
       res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
@@ -222,7 +242,6 @@ export default async function handler(req, res) {
     const replyTime = Date.now();
 
     try {
-      // Backup log
       await db.collection("users").doc(userId).collection("messages").add({
         role: "assistant",
         text: fullReply || "",
@@ -230,7 +249,6 @@ export default async function handler(req, res) {
         convId,
       });
 
-      // Update conversation
       const convRef = db.collection("conversations").doc(userId);
       await db.runTransaction(async (t) => {
         const convSnap = await t.get(convRef);
