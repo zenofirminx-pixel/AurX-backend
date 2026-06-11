@@ -4,6 +4,8 @@ import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
 import { parse } from "cookie";
 
+export const config = { maxDuration: 60 };
+
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -11,14 +13,39 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-export default async function handler(req, res) {
-  try {
-    setCors(res);
-    if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST")
-      return res.status(405).json({ error: "Method not allowed" });
+// SAFE: nettoie les caractères qui cassent JSON/prompt
+function safeStr(str) {
+  if (!str) return "";
+  return String(str)
+ .replace(/\\/g, "\\\\")
+ .replace(/"/g, '\\"')
+ .replace(/\n/g, " ")
+ .replace(/\r/g, " ")
+ .trim();
+}
 
-    // 🔐 USER
+export default async function handler(req, res) {
+  setCors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method!== "POST")
+    return res.status(405).json({ error: "Method not allowed" });
+
+  // 1. SSE HEADERS IMMÉDIATEMENT - FIX CRASH
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  const sendError = (msg) => {
+    try {
+      res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
+      res.write(`data: [DONE]\n\n`);
+      res.end();
+    } catch {}
+  };
+
+  try {
+    // 2. USER
     const cookies = parse(req.headers.cookie || "");
     let userId = "guest_global";
 
@@ -32,18 +59,18 @@ export default async function handler(req, res) {
     }
 
     const body =
-      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
 
     const message = body.message?.trim();
     const convId = body.convId;
 
-    if (!message || !convId) {
-      return res.status(400).json({ error: "Missing fields" });
+    if (!message ||!convId) {
+      return sendError("Missing fields");
     }
 
     const now = Date.now();
 
-    // 🧠 MEMORY SAVE
+    // 3. MEMORY SAVE - ton extractMemory doit filtrer stopWords
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length) {
@@ -53,39 +80,50 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // 📜 HISTORY (20 LAST MESSAGES)
+    // 4. HISTORY
     const snap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .where("convId", "==", convId)
-      .limit(20)
-      .get();
+   .collection("users")
+   .doc(userId)
+   .collection("messages")
+   .where("convId", "==", convId)
+   .orderBy("timestamp", "desc")
+   .limit(20)
+   .get();
 
     let history = snap.docs
-      .map((d) => d.data())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map((d) => ({
-        role: d.role,
-        content: d.text,
-      }));
+   .map((d) => d.data())
+   .reverse()
+   .map((d) => ({
+      role: d.role,
+      content: d.text,
+    }));
 
     history.push({ role: "user", content: message });
 
-    // 🧠 MEMORY LOAD
-    const memSnap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("memory")
-      .limit(20)
-      .get();
+    // 5. MEMORY LOAD - EXTRACTION SAFE DEPUIS FIRESTORE
+    let userName = null;
+    let prefs = [];
+    let facts = [];
 
-    const memoryText = memSnap.docs
-      .map((d) => d.data().value)
-      .slice(0, 3)
-      .join(" | ");
+    try {
+      const memSnap = await db
+     .collection("users")
+     .doc(userId)
+     .collection("memory")
+     .limit(30)
+     .get();
 
-    // 💾 SAVE USER MESSAGE
+      memSnap.forEach(doc => {
+        const d = doc.data();
+        if (d.type === "identity" && d.key === "name") userName = d.value;
+        else if (d.type === "preference") prefs.push(d.value);
+        else if (d.type === "fact") facts.push(d.value);
+      });
+    } catch (e) {
+      console.error("Memory load error:", e);
+    }
+
+    // 6. SAVE USER MESSAGE
     await db.collection("users").doc(userId).collection("messages").add({
       role: "user",
       text: message,
@@ -93,22 +131,35 @@ export default async function handler(req, res) {
       convId,
     });
 
-    // 🤖 SYSTEM PROMPT
-    const systemPrompt = buildPrompt();
+    // 7. PROMPT - INJECTION SAFE + RÈGLE BRUTALE POUR LE NOM
+    const basePrompt = buildPrompt();
+    let memoryCtx = "";
+
+    if (userName) {
+      const safeName = safeStr(userName);
+      memoryCtx += `USER_NAME: ${safeName}\n`;
+      memoryCtx += `RULE: If user asks "comment je m'appelle", "quel est mon nom", "mon nom", reply exactly: Tu t'appelles ${safeName}\n\n`;
+    }
+    if (prefs.length) {
+      memoryCtx += `User likes: ${prefs.map(safeStr).slice(0, 3).join(", ")}.\n\n`;
+    }
+    if (facts.length) {
+      memoryCtx += `Facts: ${facts.map(safeStr).slice(0, 3).join(", ")}.\n\n`;
+    }
+
+    const systemPrompt = memoryCtx? `${memoryCtx}---\n\n${basePrompt}` : basePrompt;
 
     const messages = [
       {
         role: "system",
         content: systemPrompt,
       },
-      ...history,
+   ...history,
     ];
 
-    // 🌊 STREAM HEADERS
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+    console.log("[GPT] Streaming", messages.length, "messages");
 
+    // 8. OPENROUTER STREAM
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -128,106 +179,94 @@ export default async function handler(req, res) {
       }
     );
 
-    if (!response.ok || !response.body) {
-      res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
-      return res.end();
+    if (!response.ok ||!response.body) {
+      const err = await response.text();
+      console.error("OpenRouter error:", response.status, err);
+      return sendError("AI service error");
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
     let fullReply = "";
 
-    // 🌊 STREAM LOOP
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    // 9. STREAM LOOP
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n").filter(line => line.trim());
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (data === "[DONE]") break;
 
-        const data = line.replace("data: ", "");
-        if (data === "[DONE]") continue;
-
-        try {
-          const parsed = JSON.parse(data);
-          const content = parsed.choices?.[0]?.delta?.content;
-
-          if (content) {
-            fullReply += content;
-            res.write(`data: ${JSON.stringify({ content })}\n\n`);
-          }
-        } catch {}
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              fullReply += content;
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
+          } catch {}
+        }
       }
+    } catch (e) {
+      console.error("Stream error:", e);
+      res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
-    // 🔥 IMPORTANT: END STREAM FIRST
-    res.end();
-
-    // 💾 SAVE BOT MESSAGE (SAFE)
+    // 10. SAVE BOT MESSAGE
     const replyTime = Date.now();
 
-    const convRef = db.collection("conversations").doc(userId);
-    const convSnap = await convRef.get();
-
-    let conversations = convSnap.exists
-      ? convSnap.data().conversations || []
-      : [];
-
-    let currentConv = conversations.find(c => c.id === convId);
-
-if (!currentConv) {
-  currentConv = {
-    id: convId,
-    title: message.slice(0, 40),
-    messages: [],
-    date: now,
-    updatedAt: now
-  };
-
-  conversations.unshift(currentConv);
-}
-
-// sauvegarde message user dans la conversation
-currentConv.messages.push({
-  text: message,
-  type: "user",
-  timestamp: now
-});
-
-// sauvegarde message bot dans la conversation
-currentConv.messages.push({
-  text: fullReply || "",
-  type: "bot",
-  timestamp: replyTime
-});
-
-currentConv.updatedAt = replyTime;
-
-if (conversations.length > 30) {
-  conversations = conversations.slice(0, 30);
-}
-
-    await convRef.set({ conversations });
-
-    // backup message log
-    await db.collection("users").doc(userId).collection("messages").add({
-      role: "assistant",
-      text: fullReply || "",
-      timestamp: replyTime,
-      convId,
-    });
-  } catch (err) {
-    console.error("Chat error:", err);
-
-    if (!res.headersSent) {
-      res.status(500).json({
-        error: "Server crash",
-        details: err.message,
+    try {
+      // Backup log
+      await db.collection("users").doc(userId).collection("messages").add({
+        role: "assistant",
+        text: fullReply || "",
+        timestamp: replyTime,
+        convId,
       });
+
+      // Update conversation
+      const convRef = db.collection("conversations").doc(userId);
+      await db.runTransaction(async (t) => {
+        const convSnap = await t.get(convRef);
+        let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
+        let currentConv = conversations.find(c => c.id === convId);
+
+        if (!currentConv) {
+          currentConv = {
+            id: convId,
+            title: message.slice(0, 40),
+            messages: [],
+            date: now,
+            updatedAt: now
+          };
+          conversations.unshift(currentConv);
+        }
+
+        currentConv.messages.push(
+          { text: message, type: "user", timestamp: now },
+          { text: fullReply || "", type: "bot", timestamp: replyTime }
+        );
+        currentConv.updatedAt = replyTime;
+
+        if (conversations.length > 30) conversations = conversations.slice(0, 30);
+        t.set(convRef, { conversations });
+      });
+    } catch (dbErr) {
+      console.error("DB save error:", dbErr);
     }
+
+    // 11. END SSE
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+
+  } catch (err) {
+    console.error("Server crash:", err);
+    sendError("Server error");
   }
 }
