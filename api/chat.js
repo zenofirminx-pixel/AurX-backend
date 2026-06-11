@@ -20,17 +20,18 @@ function sendSSE(res, obj) {
 export default async function handler(req, res) {
   try {
     setCors(res);
+
     if (req.method === "OPTIONS") return res.status(200).end();
     if (req.method !== "POST")
       return res.status(405).json({ error: "Method not allowed" });
 
-    // SSE headers
+    // SSE HEADERS
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders?.();
 
-    // USER ID
+    // USER
     const cookies = parse(req.headers.cookie || "");
     let userId = "guest_global";
 
@@ -76,14 +77,14 @@ export default async function handler(req, res) {
       .limit(20)
       .get();
 
-    let history = snap.docs.map((d) => ({
+    const history = snap.docs.map((d) => ({
       role: d.data().role,
       content: d.data().text,
     }));
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD (simple safe)
+    // MEMORY LOAD
     const memSnap = await db
       .collection("users")
       .doc(userId)
@@ -103,7 +104,7 @@ export default async function handler(req, res) {
       ...history,
     ];
 
-    // OPENROUTER CALL
+    // OPENROUTER
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -124,8 +125,8 @@ export default async function handler(req, res) {
     );
 
     if (!response.ok || !response.body) {
-      const errText = await response.text();
-      console.error("OpenRouter error:", errText);
+      const err = await response.text();
+      console.error("OpenRouter error:", err);
       sendSSE(res, { error: "AI service error" });
       return res.end();
     }
@@ -134,14 +135,17 @@ export default async function handler(req, res) {
     const decoder = new TextDecoder();
 
     let fullReply = "";
+    let buffer = "";
 
     // STREAM LOOP FIXED
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n");
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // garde ligne incomplète
 
       for (const line of lines) {
         const trimmed = line.trim();
@@ -155,10 +159,13 @@ export default async function handler(req, res) {
         try {
           const parsed = JSON.parse(data);
 
-          // 🔥 FIX IMPORTANT: plusieurs formats possibles OpenRouter
+          const choice = parsed?.choices?.[0];
+
           const content =
-            parsed?.choices?.[0]?.delta?.content ||
-            parsed?.choices?.[0]?.message?.content;
+            choice?.delta?.content ||
+            choice?.message?.content ||
+            choice?.text ||
+            "";
 
           if (content) {
             fullReply += content;
@@ -168,7 +175,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // FIN STREAM
+    // END STREAM
     sendSSE(res, { done: true, fullReply });
     res.end();
   } catch (err) {
