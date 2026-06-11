@@ -185,7 +185,7 @@ export default async function handler(req, res) {
     res.setHeader('Connection', 'keep-alive');
 
     // OPENROUTER STREAM
-    const apiKey = process.env.OPENAI_API_KEY_5;
+    const apiKey = process.env.OPENAI_API_KEY_1;
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
