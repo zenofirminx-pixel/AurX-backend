@@ -13,12 +13,25 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
+// SAFE: nettoie les caractères qui cassent JSON/prompt
+function safeStr(str) {
+  if (!str) return "";
+  return String(str)
+  .replace(/\\/g, "\\\\")
+  .replace(/"/g, '\\"')
+  .replace(/\n/g, " ")
+  .replace(/\r/g, " ")
+  .trim();
+}
+
 async function ensureUserStructure(db, userId) {
   if (!userId) return;
   const userRef = db.collection("users").doc(userId);
   const convRef = db.collection("conversations").doc(userId);
-  await userRef.set({ createdAt: Date.now() }, { merge: true });
-  await convRef.set({ conversations: [] }, { merge: true });
+  await Promise.all([
+    userRef.set({ createdAt: Date.now() }, { merge: true }),
+    convRef.set({ conversations: [] }, { merge: true })
+  ]);
 }
 
 async function cleanupOldData(db, userId) {
@@ -37,18 +50,34 @@ async function cleanupOldData(db, userId) {
       const lastUpdate = c.updatedAt || c.date || 0;
       return now - lastUpdate <= limit;
     });
-    if (filtered.length !== conversations.length) {
+    if (filtered.length!== conversations.length) {
       await convRef.set({ conversations: filtered });
     }
   }
 }
 
+// FIX CRITIQUE: On démarre SSE AVANT tout traitement qui peut crash
 export default async function handler(req, res) {
-  try {
-    setCors(res);
-    if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  setCors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
+  // 1. SSE HEADERS IMMÉDIATEMENT - avant tout crash possible
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Nginx: pas de buffer
+
+  const sendError = (msg) => {
+    try {
+      res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
+      res.write(`data: [DONE]\n\n`);
+      res.end();
+    } catch {}
+  };
+
+  try {
+    // 2. AUTH
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
     let userId = "guest_global";
@@ -59,20 +88,24 @@ export default async function handler(req, res) {
       } catch {}
     }
 
+    // 3. BODY
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-    } catch {}
+      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
+    } catch {
+      return sendError("Invalid JSON body");
+    }
+
     const message = body.message?.trim();
     const convId = body.convId;
 
-    if (!message) return res.status(400).json({ error: "Missing message" });
-    if (!convId) return res.status(400).json({ error: "Missing convId" });
+    if (!message) return sendError("Missing message");
+    if (!convId) return sendError("Missing convId");
 
     const now = Date.now();
     await ensureUserStructure(db, userId);
 
-    // MEMORY SAVE
+    // 4. MEMORY SAVE - extracteur minimal: nom + prefs + lieu/age/job uniquement
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -82,62 +115,49 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY - FIX: ORDERBY POUR AVOIR LES DERNIERS MESSAGES
+    // 5. HISTORY
     let history = [];
     try {
       const snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .orderBy("timestamp", "desc") // FIX 1: tri côté Firestore
-        .limit(20) // 20 suffisent pour le contexte
-        .get();
+      .collection("users")
+      .doc(userId)
+      .collection("messages")
+      .where("convId", "==", convId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
 
-      const docs = snap.docs.reverse(); // Remet dans l'ordre chrono
-
+      const docs = snap.docs.reverse();
       docs.forEach(d => {
         const data = d.data();
-        history.push({
-          role: data.role,
-          content: data.text
-        });
+        history.push({ role: data.role, content: data.text });
       });
-
-      console.log(`[HISTORY] UserId: ${userId} | ConvId: ${convId} | Loaded ${history.length} messages`);
+      console.log(`[HISTORY] ${userId} | ${convId} | ${history.length} msgs`);
     } catch (e) {
       console.error("History load error:", e);
     }
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - ta logique est bonne je garde
-    let memoryText = "";
+    // 6. MEMORY LOAD - LECTURE FIRESTORE UNIQUEMENT
     let userName = null;
+    let prefs = [];
+    let facts = [];
+
     try {
       const memSnap = await db.collection("users").doc(userId).collection("memory").limit(30).get();
-      const identity = [];
-      const facts = [];
-      const preferences = [];
-
       memSnap.forEach(doc => {
         const d = doc.data();
         if (d.type === "identity" && d.key === "name") userName = d.value;
-        if (d.type === "identity") identity.push(d.value);
-        else if (d.type === "preference") preferences.push(d.value);
-        else facts.push(d.value);
+        else if (d.type === "preference") prefs.push(d.value);
+        else if (d.type === "fact") facts.push(d.value);
       });
-
-      const memoryParts = [];
-      if (identity.length) memoryParts.push(`User: ${identity[0]}`);
-      if (facts.length) memoryParts.push(`Facts: ${facts.slice(0, 3).join(", ")}`);
-      if (preferences.length) memoryParts.push(`Likes: ${preferences.slice(0, 2).join(", ")}`);
-      memoryText = memoryParts.join(" | ");
+      console.log(`[MEMORY] User: ${userName || 'Unknown'} | Prefs: ${prefs.length} | Facts: ${facts.length}`);
     } catch (e) {
       console.error("Memory load error:", e);
     }
 
-    // STRUCTURE UNIFIÉE USER - FIX 2: mêmes champs que bot
+    // 7. SAVE USER MSG
     const userMsgData = {
       role: "user",
       type: "user",
@@ -146,28 +166,30 @@ export default async function handler(req, res) {
       timestamp: now,
       convId
     };
-
-    // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT
-    const systemPrompt = buildPrompt();
-    const messages = [
-      {
-        role: "system",
-        content: `You are AurX. ${memoryText ? `Context: ${memoryText}` : ""}\n\n${systemPrompt}`.trim()
-      },
-      ...history
-    ];
+    // 8. PROMPT - INJECTION SAFE DEPUIS FIRESTORE
+    const basePrompt = buildPrompt();
+    let memoryCtx = "";
+
+    if (userName) {
+      const safeName = safeStr(userName);
+      memoryCtx += `USER_NAME: ${safeName}\n`;
+      memoryCtx += `RULE: If user asks "comment je m'appelle", "quel est mon nom", reply exactly: Tu t'appelles ${safeName}\n\n`;
+    }
+    if (prefs.length) {
+      memoryCtx += `User likes: ${prefs.map(safeStr).slice(0, 3).join(", ")}.\n\n`;
+    }
+    if (facts.length) {
+      memoryCtx += `Facts: ${facts.map(safeStr).slice(0, 3).join(", ")}.\n\n`;
+    }
+
+    const systemPrompt = memoryCtx? `${memoryCtx}---\n\n${basePrompt}` : basePrompt;
+    const messages = [{ role: "system", content: systemPrompt },...history];
 
     console.log("[GPT] Streaming", messages.length, "messages");
 
-    // SSE HEADERS
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // OPENROUTER STREAM
+    // 9. OPENROUTER STREAM
     const apiKey = process.env.OPENAI_API_KEY_1;
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -186,11 +208,12 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
-      res.end();
-      return;
+      const err = await response.text();
+      console.error("[OpenRouter]", response.status, err);
+      return sendError("AI service error");
     }
 
+    // 10. STREAM TO CLIENT
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullReply = '';
@@ -204,19 +227,18 @@ export default async function handler(req, res) {
         const lines = chunk.split('\n').filter(line => line.trim());
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') break;
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          if (data === '[DONE]') break;
 
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content || '';
-              if (content) {
-                fullReply += content;
-                res.write(`data: ${JSON.stringify({ content })}\n\n`);
-              }
-            } catch (e) {}
-          }
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content || '';
+            if (content) {
+              fullReply += content;
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
+          } catch {}
         }
       }
     } catch (e) {
@@ -224,54 +246,45 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
-    // FIX 3: SAVE AVANT res.end()
-    const replyTime = Date.now();
-
-    // STRUCTURE UNIFIÉE BOT - MÊMES CHAMPS QUE USER
+    // 11. SAVE BOT MSG
     const botMsgData = {
       role: "assistant",
       type: "bot",
       text: fullReply || "",
       content: fullReply || "",
-      timestamp: replyTime,
+      timestamp: Date.now(),
       convId,
     };
 
     try {
-      // 1. Save dans messages pour reload
       await db.collection("users").doc(userId).collection("messages").add(botMsgData);
 
-      // 2. Update conversations avec transaction atomique
       const convRef = db.collection("conversations").doc(userId);
       await db.runTransaction(async (t) => {
         const convSnap = await t.get(convRef);
-        let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
+        let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
         let currentConv = conversations.find(c => c.id === convId);
         if (!currentConv) {
           currentConv = { id: convId, title: message.slice(0, 40), messages: [], date: now, updatedAt: now };
           conversations.unshift(currentConv);
         }
-        // Push les 2 messages d'un coup avec la même structure
         currentConv.messages.push(userMsgData, botMsgData);
-        currentConv.updatedAt = replyTime;
+        currentConv.updatedAt = Date.now();
         if (conversations.length > 30) conversations = conversations.slice(0, 30);
         t.set(convRef, { conversations });
       });
     } catch (dbErr) {
-      console.error("Firestore save error:", dbErr);
-      res.write(`data: ${JSON.stringify({ error: "Erreur sauvegarde DB" })}\n\n`);
+      console.error("DB save error:", dbErr);
     }
 
-    // FIX 4: res.end() À LA TOUTE FIN
+    // 12. FIN SSE
     res.write(`data: [DONE]\n\n`);
     res.end();
 
     cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
   } catch (err) {
-    console.error("Chat error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: "Server crash", details: err.message });
-    }
+    console.error("Server crash:", err);
+    sendError("Server error");
   }
 }
