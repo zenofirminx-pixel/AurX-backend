@@ -13,6 +13,17 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
+// Nettoie juste les caractères dangereux, lit RIEN en dur
+function safeString(str) {
+  if (!str) return "";
+  return String(str)
+   .replace(/\\/g, "\\\\")
+   .replace(/"/g, '\\"')
+   .replace(/\n/g, " ")
+   .replace(/\r/g, " ")
+   .trim();
+}
+
 async function ensureUserStructure(db, userId) {
   if (!userId) return;
   const userRef = db.collection("users").doc(userId);
@@ -72,12 +83,11 @@ export default async function handler(req, res) {
     const now = Date.now();
     await ensureUserStructure(db, userId);
 
-    // MEMORY SAVE
+    // MEMORY SAVE - Extrait depuis le message user
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
-        console.log("[MEMORY SAVE] Saved:", memories.length, "items");
       }
     } catch (e) {
       console.error("Memory save error:", e);
@@ -87,13 +97,13 @@ export default async function handler(req, res) {
     let history = [];
     try {
       const snap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("messages")
-      .where("convId", "==", convId)
-      .orderBy("timestamp", "desc")
-      .limit(20)
-      .get();
+     .collection("users")
+     .doc(userId)
+     .collection("messages")
+     .where("convId", "==", convId)
+     .orderBy("timestamp", "desc")
+     .limit(20)
+     .get();
 
       const docs = snap.docs.reverse();
 
@@ -112,7 +122,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - DEBUG COMPLET
+    // MEMORY LOAD - LECTURE 100% FIRESTORE
     let userMemory = {
       name: null,
       identity: [],
@@ -120,25 +130,22 @@ export default async function handler(req, res) {
       preferences: []
     };
     try {
-      console.log("[DEBUG] Starting memory load for userId:", userId);
       const memSnap = await db.collection("users").doc(userId).collection("memory").get();
-      console.log("[DEBUG] Memory docs found:", memSnap.size);
 
       memSnap.forEach(doc => {
         const d = doc.data();
-        console.log("[DEBUG] Memory doc:", d);
+        // TOUT VIENT DE FIRESTORE ICI
         if (d.type === "identity" && d.key === "name") userMemory.name = d.value;
         if (d.type === "identity") userMemory.identity.push(d.value);
         else if (d.type === "preference") userMemory.preferences.push(d.value);
         else userMemory.facts.push(d.value);
       });
 
-      console.log(`[MEMORY] Final:`, JSON.stringify(userMemory));
+      console.log(`[MEMORY] User: ${userMemory.name || 'Unknown'} | Facts: ${userMemory.facts.length} | Prefs: ${userMemory.preferences.length}`);
     } catch (e) {
-      console.error("[MEMORY LOAD ERROR]:", e);
+      console.error("Memory load error:", e);
     }
 
-    // STRUCTURE UNIFIÉE USER MSG
     const userMsgData = {
       role: "user",
       type: "user",
@@ -148,57 +155,44 @@ export default async function handler(req, res) {
       convId
     };
 
-    // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT - INJECTION DIRECTE + FONCTION TEST
+    // PROMPT - INJECTION DEPUIS FIRESTORE UNIQUEMENT
     const basePrompt = buildPrompt();
-    console.log("[DEBUG] Base prompt length:", basePrompt.length);
 
     let memoryInjection = "";
     if (userMemory.name) {
-      memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this.\n\n`;
+      const safeName = safeString(userMemory.name); // ← Juste nettoyage
+      memoryInjection += `USER_NAME: ${safeName}\n`;
+      memoryInjection += `RULE: If the user asks "comment je m'appelle", "quel est mon nom", or similar, reply: Tu t'appelles ${safeName}\n\n`;
     }
     if (userMemory.identity.length > 0) {
-      memoryInjection += `User identity: ${userMemory.identity.join(", ")}.\n\n`;
+      const safeIdentity = userMemory.identity.map(safeString).join(", ");
+      memoryInjection += `User identity: ${safeIdentity}.\n\n`;
     }
     if (userMemory.facts.length > 0) {
-      memoryInjection += `Known facts: ${userMemory.facts.slice(0, 5).join(", ")}.\n\n`;
+      const safeFacts = userMemory.facts.slice(0, 5).map(safeString).join(", ");
+      memoryInjection += `Known facts: ${safeFacts}.\n\n`;
     }
 
-    // TEST: CONST DANS LE PROMPT
-    const TEST_FUNCTION = `
-=== DEBUG MODE ===
-USER_NAME_FROM_DB: "${userMemory.name || 'NULL'}"
-USER_ID: "${userId}"
-INSTRUCTION: When asked "comment je m'appelle" or "quel est mon nom", you MUST respond with the value of USER_NAME_FROM_DB above. If it's NULL, say "Je ne connais pas encore ton nom".
-TEST_SECRET: If user asks "code secret", reply "AURX-2024".
-=== END DEBUG ===
-`;
-
     const finalSystemPrompt = memoryInjection
-     ? `${memoryInjection}${TEST_FUNCTION}\n\n---\n\n${basePrompt}`
-      : `${TEST_FUNCTION}\n\n---\n\n${basePrompt}`;
-
-    console.log("[DEBUG] Final prompt length:", finalSystemPrompt.length);
-    console.log("[DEBUG] Name in prompt:", finalSystemPrompt.includes(userMemory.name || "NO_NAME"));
+   ? `${memoryInjection}---\n\n${basePrompt}`
+      : basePrompt;
 
     const messages = [
       {
         role: "system",
         content: finalSystemPrompt
       },
-    ...history
+  ...history
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
 
-    // SSE HEADERS
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // OPENROUTER STREAM
     const apiKey = process.env.OPENAI_API_KEY_1;
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
