@@ -37,7 +37,7 @@ async function cleanupOldData(db, userId) {
       const lastUpdate = c.updatedAt || c.date || 0;
       return now - lastUpdate <= limit;
     });
-    if (filtered.length !== conversations.length) {
+    if (filtered.length!== conversations.length) {
       await convRef.set({ conversations: filtered });
     }
   }
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
   try {
     setCors(res);
     if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+    if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
     const cookies = parse(req.headers.cookie || "");
     const session = cookies.aurx_session;
@@ -61,7 +61,7 @@ export default async function handler(req, res) {
 
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
     } catch {}
     const message = body.message?.trim();
     const convId = body.convId;
@@ -82,19 +82,19 @@ export default async function handler(req, res) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY - FIX: ORDERBY POUR AVOIR LES DERNIERS MESSAGES
+    // HISTORY - FIX: ORDERBY pour avoir les vrais derniers messages
     let history = [];
     try {
       const snap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("messages")
-        .where("convId", "==", convId)
-        .orderBy("timestamp", "desc") // FIX 1: tri côté Firestore
-        .limit(20) // 20 suffisent pour le contexte
-        .get();
+       .collection("users")
+       .doc(userId)
+       .collection("messages")
+       .where("convId", "==", convId)
+       .orderBy("timestamp", "desc")
+       .limit(20)
+       .get();
 
-      const docs = snap.docs.reverse(); // Remet dans l'ordre chrono
+      const docs = snap.docs.reverse();
 
       docs.forEach(d => {
         const data = d.data();
@@ -111,33 +111,30 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - ta logique est bonne je garde
-    let memoryText = "";
-    let userName = null;
+    // MEMORY LOAD - FIX: STRUCTURE POUR BUILDPROMPT
+    let userMemory = {
+      name: null,
+      identity: [],
+      facts: [],
+      preferences: []
+    };
     try {
       const memSnap = await db.collection("users").doc(userId).collection("memory").limit(30).get();
-      const identity = [];
-      const facts = [];
-      const preferences = [];
 
       memSnap.forEach(doc => {
         const d = doc.data();
-        if (d.type === "identity" && d.key === "name") userName = d.value;
-        if (d.type === "identity") identity.push(d.value);
-        else if (d.type === "preference") preferences.push(d.value);
-        else facts.push(d.value);
+        if (d.type === "identity" && d.key === "name") userMemory.name = d.value;
+        if (d.type === "identity") userMemory.identity.push(d.value);
+        else if (d.type === "preference") userMemory.preferences.push(d.value);
+        else userMemory.facts.push(d.value);
       });
 
-      const memoryParts = [];
-      if (identity.length) memoryParts.push(`User: ${identity[0]}`);
-      if (facts.length) memoryParts.push(`Facts: ${facts.slice(0, 3).join(", ")}`);
-      if (preferences.length) memoryParts.push(`Likes: ${preferences.slice(0, 2).join(", ")}`);
-      memoryText = memoryParts.join(" | ");
+      console.log(`[MEMORY] User: ${userMemory.name || 'Unknown'} | Facts: ${userMemory.facts.length} | Prefs: ${userMemory.preferences.length}`);
     } catch (e) {
       console.error("Memory load error:", e);
     }
 
-    // STRUCTURE UNIFIÉE USER - FIX 2: mêmes champs que bot
+    // STRUCTURE UNIFIÉE USER MSG - FIX: mêmes champs que bot
     const userMsgData = {
       role: "user",
       type: "user",
@@ -150,14 +147,14 @@ export default async function handler(req, res) {
     // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT
-    const systemPrompt = buildPrompt();
+    // PROMPT - FIX: ON PASSE LA MÉMOIRE À BUILDPROMPT
+    const systemPrompt = buildPrompt(userMemory);
     const messages = [
       {
         role: "system",
-        content: `You are AurX. ${memoryText ? `Context: ${memoryText}` : ""}\n\n${systemPrompt}`.trim()
+        content: systemPrompt
       },
-      ...history
+     ...history
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
@@ -224,7 +221,7 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
-    // FIX 3: SAVE AVANT res.end()
+    // FIX: SAVE AVANT res.end() POUR ÉVITER DISPARITION AU RELOAD
     const replyTime = Date.now();
 
     // STRUCTURE UNIFIÉE BOT - MÊMES CHAMPS QUE USER
@@ -245,13 +242,12 @@ export default async function handler(req, res) {
       const convRef = db.collection("conversations").doc(userId);
       await db.runTransaction(async (t) => {
         const convSnap = await t.get(convRef);
-        let conversations = convSnap.exists ? convSnap.data().conversations || [] : [];
+        let conversations = convSnap.exists? convSnap.data().conversations || [] : [];
         let currentConv = conversations.find(c => c.id === convId);
         if (!currentConv) {
           currentConv = { id: convId, title: message.slice(0, 40), messages: [], date: now, updatedAt: now };
           conversations.unshift(currentConv);
         }
-        // Push les 2 messages d'un coup avec la même structure
         currentConv.messages.push(userMsgData, botMsgData);
         currentConv.updatedAt = replyTime;
         if (conversations.length > 30) conversations = conversations.slice(0, 30);
@@ -262,7 +258,6 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: "Erreur sauvegarde DB" })}\n\n`);
     }
 
-    // FIX 4: res.end() À LA TOUTE FIN
     res.write(`data: [DONE]\n\n`);
     res.end();
 
