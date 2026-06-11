@@ -77,12 +77,13 @@ export default async function handler(req, res) {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
+        console.log("[MEMORY SAVE] Saved:", memories.length, "items");
       }
     } catch (e) {
       console.error("Memory save error:", e);
     }
 
-    // HISTORY - FIX: ORDERBY pour avoir les vrais derniers messages
+    // HISTORY
     let history = [];
     try {
       const snap = await db
@@ -111,7 +112,7 @@ export default async function handler(req, res) {
 
     history.push({ role: "user", content: message });
 
-    // MEMORY LOAD - FIX: STRUCTURE POUR INJECTION DIRECTE
+    // MEMORY LOAD - DEBUG COMPLET
     let userMemory = {
       name: null,
       identity: [],
@@ -119,22 +120,25 @@ export default async function handler(req, res) {
       preferences: []
     };
     try {
+      console.log("[DEBUG] Starting memory load for userId:", userId);
       const memSnap = await db.collection("users").doc(userId).collection("memory").get();
+      console.log("[DEBUG] Memory docs found:", memSnap.size);
 
       memSnap.forEach(doc => {
         const d = doc.data();
+        console.log("[DEBUG] Memory doc:", d);
         if (d.type === "identity" && d.key === "name") userMemory.name = d.value;
         if (d.type === "identity") userMemory.identity.push(d.value);
         else if (d.type === "preference") userMemory.preferences.push(d.value);
         else userMemory.facts.push(d.value);
       });
 
-      console.log(`[MEMORY] User: ${userMemory.name || 'Unknown'} | Facts: ${userMemory.facts.length} | Prefs: ${userMemory.preferences.length}`);
+      console.log(`[MEMORY] Final:`, JSON.stringify(userMemory));
     } catch (e) {
-      console.error("Memory load error:", e);
+      console.error("[MEMORY LOAD ERROR]:", e);
     }
 
-    // STRUCTURE UNIFIÉE USER MSG - FIX: mêmes champs que bot
+    // STRUCTURE UNIFIÉE USER MSG
     const userMsgData = {
       role: "user",
       type: "user",
@@ -147,12 +151,13 @@ export default async function handler(req, res) {
     // SAVE USER MSG
     await db.collection("users").doc(userId).collection("messages").add(userMsgData);
 
-    // PROMPT - FIX: ON INJECTE LA MÉMOIRE DIRECT SANS PASSER PAR BUILDPROMPT
-    const basePrompt = buildPrompt(); // ton buildPrompt original qui lit les.txt
+    // PROMPT - INJECTION DIRECTE + FONCTION TEST
+    const basePrompt = buildPrompt();
+    console.log("[DEBUG] Base prompt length:", basePrompt.length);
 
     let memoryInjection = "";
     if (userMemory.name) {
-      memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this and use their name when appropriate.\n\n`;
+      memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this.\n\n`;
     }
     if (userMemory.identity.length > 0) {
       memoryInjection += `User identity: ${userMemory.identity.join(", ")}.\n\n`;
@@ -160,13 +165,23 @@ export default async function handler(req, res) {
     if (userMemory.facts.length > 0) {
       memoryInjection += `Known facts: ${userMemory.facts.slice(0, 5).join(", ")}.\n\n`;
     }
-    if (userMemory.preferences.length > 0) {
-      memoryInjection += `User preferences: ${userMemory.preferences.slice(0, 3).join(", ")}.\n\n`;
-    }
+
+    // TEST: CONST DANS LE PROMPT
+    const TEST_FUNCTION = `
+=== DEBUG MODE ===
+USER_NAME_FROM_DB: "${userMemory.name || 'NULL'}"
+USER_ID: "${userId}"
+INSTRUCTION: When asked "comment je m'appelle" or "quel est mon nom", you MUST respond with the value of USER_NAME_FROM_DB above. If it's NULL, say "Je ne connais pas encore ton nom".
+TEST_SECRET: If user asks "code secret", reply "AURX-2024".
+=== END DEBUG ===
+`;
 
     const finalSystemPrompt = memoryInjection
-     ? `${memoryInjection}---\n\n${basePrompt}`
-      : basePrompt;
+     ? `${memoryInjection}${TEST_FUNCTION}\n\n---\n\n${basePrompt}`
+      : `${TEST_FUNCTION}\n\n---\n\n${basePrompt}`;
+
+    console.log("[DEBUG] Final prompt length:", finalSystemPrompt.length);
+    console.log("[DEBUG] Name in prompt:", finalSystemPrompt.includes(userMemory.name || "NO_NAME"));
 
     const messages = [
       {
@@ -177,7 +192,6 @@ export default async function handler(req, res) {
     ];
 
     console.log("[GPT] Streaming", messages.length, "messages");
-    console.log("[SYSTEM PROMPT PREVIEW]", finalSystemPrompt.substring(0, 300));
 
     // SSE HEADERS
     res.setHeader('Content-Type', 'text/event-stream');
@@ -203,6 +217,8 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[OPENROUTER ERROR]", response.status, errorText);
       res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);
       res.end();
       return;
@@ -241,10 +257,8 @@ export default async function handler(req, res) {
       res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);
     }
 
-    // FIX: SAVE AVANT res.end() POUR ÉVITER DISPARITION AU RELOAD
     const replyTime = Date.now();
 
-    // STRUCTURE UNIFIÉE BOT - MÊMES CHAMPS QUE USER
     const botMsgData = {
       role: "assistant",
       type: "bot",
@@ -255,10 +269,8 @@ export default async function handler(req, res) {
     };
 
     try {
-      // 1. Save dans messages pour reload
       await db.collection("users").doc(userId).collection("messages").add(botMsgData);
 
-      // 2. Update conversations avec transaction atomique
       const convRef = db.collection("conversations").doc(userId);
       await db.runTransaction(async (t) => {
         const convSnap = await t.get(convRef);
