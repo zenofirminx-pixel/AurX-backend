@@ -7,256 +7,287 @@ import { parse } from "cookie";
 export const config = { maxDuration: 60 };
 
 function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
+res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+res.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
-function sendError(res, msg) {
-  try {
-    res.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
-    res.write(`data: [DONE]\n\n`);
-    res.end();
-  } catch {}
+async function ensureUserStructure(db, userId) {
+if (!userId) return;
+const userRef = db.collection("users").doc(userId);
+const convRef = db.collection("conversations").doc(userId);
+await userRef.set({ createdAt: Date.now() }, { merge: true });
+await convRef.set({ conversations: [] }, { merge: true });
 }
 
-function write(res, obj) {
-  try {
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
-  } catch {}
-}
+async function cleanupOldData(db, userId) {
+const limit = 5 * 24 * 60 * 60 * 1000;
+const now = Date.now();
+const msgSnap = await db.collection("users").doc(userId).collection("messages").where("timestamp", "<", now - limit).get();
+const msgBatch = db.batch();
+msgSnap.forEach((doc) => msgBatch.delete(doc.ref));
+await msgBatch.commit();
 
-function closeStream(res) {
-  try {
-    res.write(`data: [DONE]\n\n`);
-    res.end();
-  } catch {}
+const convRef = db.collection("conversations").doc(userId);
+const convSnap = await convRef.get();
+if (convSnap.exists) {
+const conversations = convSnap.data().conversations || [];
+const filtered = conversations.filter(c => {
+const lastUpdate = c.updatedAt || c.date || 0;
+return now - lastUpdate <= limit;
+});
+if (filtered.length!== conversations.length) {
+await convRef.set({ conversations: filtered });
+}
+}
 }
 
 export default async function handler(req, res) {
-  setCors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")
-    return res.status(405).json({ error: "Method not allowed" });
+try {
+setCors(res);
+if (req.method === "OPTIONS") return res.status(200).end();
+if (req.method!== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+const cookies = parse(req.headers.cookie || "");  
+const session = cookies.aurx_session;  
+let userId = "guest_global";  
+if (session) {  
+  try {  
+    const user = JSON.parse(Buffer.from(session, "base64").toString());  
+    userId = user.sid || user.id || "guest_global";  
+  } catch {}  
+}  
 
-  try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+let body = {};  
+try {  
+  body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};  
+} catch {}  
+const message = body.message?.trim();  
+const convId = body.convId;  
 
-    const message = body.message?.trim();
-    const convId = body.convId;
+if (!message) return res.status(400).json({ error: "Missing message" });  
+if (!convId) return res.status(400).json({ error: "Missing convId" });  
 
-    if (!message) return sendError(res, "Missing message");
-    if (!convId) return sendError(res, "Missing convId");
+const now = Date.now();  
+await ensureUserStructure(db, userId);  
 
-    const cookies = parse(req.headers.cookie || "");
-    let userId = "guest_global";
+// MEMORY SAVE  
+try {  
+  const memories = extractMemory(message);  
+  if (Array.isArray(memories) && memories.length > 0) {  
+    await saveMemory(db, userId, memories);  
+  }  
+} catch (e) {  
+  console.error("Memory save error:", e);  
+}  
 
-    if (cookies.aurx_session) {
-      try {
-        const user = JSON.parse(
-          Buffer.from(cookies.aurx_session, "base64").toString()
-        );
-        userId = user.sid || user.id || "guest_global";
-      } catch {}
-    }
+// HISTORY - FIX: ORDERBY pour avoir les vrais derniers messages  
+let history = [];  
+try {  
+  const snap = await db  
+  .collection("users")  
+  .doc(userId)  
+  .collection("messages")  
+  .where("convId", "==", convId)  
+  .orderBy("timestamp", "desc")  
+  .limit(20)  
+  .get();  
 
-    const now = Date.now();
-    const tenMinutesAgo = now - 10 * 60 * 1000;
+  const docs = snap.docs.reverse();  
 
-    const messagesRef = db.collection("users").doc(userId).collection("messages");
+  docs.forEach(d => {  
+    const data = d.data();  
+    history.push({  
+      role: data.role,  
+      content: data.text  
+    });  
+  });  
 
-    // 1. SUPPRESSION DES ANCIENS MESSAGES (10 MINUTES)
-    try {
-      const oldMessagesSnap = await messagesRef
-        .where("convId", "==", convId)
-        .where("timestamp", "<", tenMinutesAgo)
-        .get();
+  console.log(`[HISTORY] UserId: ${userId} | ConvId: ${convId} | Loaded ${history.length} messages`);  
+} catch (e) {  
+  console.error("History load error:", e);  
+}  
 
-      if (!oldMessagesSnap.empty) {
-        const batch = db.batch();
-        oldMessagesSnap.docs.forEach((doc) => {
-          batch.delete(doc.ref);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      console.error("Erreur nettoyage messages :", err);
-    }
+history.push({ role: "user", content: message });  
 
-    // 2. ENREGISTREMENT DU MESSAGE UTILISATEUR
-    await messagesRef.add({
-      role: "user",
-      text: message,
-      timestamp: now,
-      convId,
-    });
+// MEMORY LOAD - FIX: STRUCTURE POUR INJECTION DIRECTE  
+let userMemory = {  
+  name: null,  
+  identity: [],  
+  facts: [],  
+  preferences: []  
+};  
+try {  
+  const memSnap = await db.collection("users").doc(userId).collection("memory").get();  
 
-    try {
-      const memories = extractMemory(message);
-      if (Array.isArray(memories) && memories.length > 0) {
-        await saveMemory(db, userId, memories);
-      }
-    } catch {}
+  memSnap.forEach(doc => {  
+    const d = doc.data();  
+    if (d.type === "identity" && d.key === "name") userMemory.name = d.value;  
+    if (d.type === "identity") userMemory.identity.push(d.value);  
+    else if (d.type === "preference") userMemory.preferences.push(d.value);  
+    else userMemory.facts.push(d.value);  
+  });  
 
-    // 3. RÉCUPÉRATION DE L'HISTORIQUE
-    let history = [];
-    try {
-      const snap = await messagesRef
-        .where("convId", "==", convId)
-        .get();
+  console.log(`[MEMORY] User: ${userMemory.name || 'Unknown'} | Facts: ${userMemory.facts.length} | Prefs: ${userMemory.preferences.length}`);  
+} catch (e) {  
+  console.error("Memory load error:", e);  
+}  
 
-      history = snap.docs
-        .map((d) => d.data())
-        .sort((a, b) => a.timestamp - b.timestamp)
-        .map((m) => ({
-          role: m.role,
-          content: m.text,
-        }));
+// STRUCTURE UNIFIÉE USER MSG - FIX: mêmes champs que bot  
+const userMsgData = {  
+  role: "user",  
+  type: "user",  
+  text: message,  
+  content: message,  
+  timestamp: now,  
+  convId  
+};  
 
-      if (
-        history.length > 0 &&
-        history[history.length - 1].content === message &&
-        history[history.length - 1].role === "user"
-      ) {
-        history.pop();
-      }
+// SAVE USER MSG  
+await db.collection("users").doc(userId).collection("messages").add(userMsgData);  
 
-      history = history.slice(-19);
-    } catch {}
+// PROMPT - FIX: ON INJECTE LA MÉMOIRE DIRECT SANS PASSER PAR BUILDPROMPT  
+const basePrompt = buildPrompt(); // ton buildPrompt original qui lit les.txt  
 
-    // 4. CHARGEMENT DE LA MÉMOIRE PROFONDE
-    let name = null;
-    let facts = [];
-    let prefs = [];
+let memoryInjection = "";  
+if (userMemory.name) {  
+  memoryInjection += `CRITICAL: The user's name is ${userMemory.name}. You MUST remember this and use their name when appropriate.\n\n`;  
+}  
+if (userMemory.identity.length > 0) {  
+  memoryInjection += `User identity: ${userMemory.identity.join(", ")}.\n\n`;  
+}  
+if (userMemory.facts.length > 0) {  
+  memoryInjection += `Known facts: ${userMemory.facts.slice(0, 5).join(", ")}.\n\n`;  
+}  
+if (userMemory.preferences.length > 0) {  
+  memoryInjection += `User preferences: ${userMemory.preferences.slice(0, 3).join(", ")}.\n\n`;  
+}  
 
-    try {
-      const memSnap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("memory")
-        .get();
+const finalSystemPrompt = memoryInjection  
+ ? `${memoryInjection}---\n\n${basePrompt}`  
+  : basePrompt;  
 
-      memSnap.forEach((doc) => {
-        const d = doc.data();
-        if (d.type === "identity" && d.key === "name") {
-          name = d.value;
-        } else if (d.type === "preference") {
-          prefs.push(d.value);
-        } else {
-          facts.push(d.value);
-        }
-      });
-    } catch {}
+const messages = [  
+  {  
+    role: "system",  
+    content: finalSystemPrompt  
+  },  
+...history  
+];  
 
-    // 5. CONSTRUCTION DU BASE PROMPT ET DU CONTEXTE
-    let basePrompt = "";
-    try {
-      const customPrompt = buildPrompt();
-      basePrompt = customPrompt ? String(customPrompt) : "Tu es AurX, un assistant IA utile et précis.";
-    } catch {
-      basePrompt = "Tu es AurX, un assistant IA utile et précis.";
-    }
+console.log("[GPT] Streaming", messages.length, "messages");  
+console.log("[SYSTEM PROMPT PREVIEW]", finalSystemPrompt.substring(0, 300));  
 
-    // Formatage strict du bloc d'instructions
-    let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
-    if (name || facts.length || prefs.length) {
-      instructions += `[CONTEXTE UTILISATEUR]\n`;
-      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
-      if (facts.length) instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
-      if (prefs.length) instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
-      instructions += `[FIN DU CONTEXTE]\n\n`;
-    }
+// SSE HEADERS  
+res.setHeader('Content-Type', 'text/event-stream');  
+res.setHeader('Cache-Control', 'no-cache');  
+res.setHeader('Connection', 'keep-alive');  
 
-    // Technique d'injection : On met les instructions dans le rôle system
-    const messages = [
-      { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
-      ...history,
-    ];
+// OPENROUTER STREAM  
+const apiKey = process.env.OPENAI_API_KEY_1;  
+const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {  
+  method: "POST",  
+  headers: {  
+    "Content-Type": "application/json",  
+    Authorization: `Bearer ${apiKey}`,  
+    "HTTP-Referer": "https://aurx.vercel.app",  
+    "X-Title": "AurX"  
+  },  
+  body: JSON.stringify({  
+    model: "openai/gpt-4o-mini",  
+    messages,  
+    stream: true,  
+    temperature: 0.7  
+  })  
+});  
 
-    // Renforcement : On injecte un rappel des instructions système directement avec le dernier message utilisateur
-    // Cela empêche le modèle "d'oublier" le prompt à cause du poids de l'historique.
-    const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
-    
-    messages.push({ role: "user", content: finalUserContent });
+if (!response.ok) {  
+  res.write(`data: ${JSON.stringify({ error: "OpenRouter error" })}\n\n`);  
+  res.end();  
+  return;  
+}  
 
-    // 6. APPEL OPENROUTER
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
-          "HTTP-Referer": "https://aurx.vercel.app",
-          "X-Title": "AurX",
-        },
-        body: JSON.stringify({
-          model: "openai/gpt-4o-mini",
-          messages,
-          stream: true,
-          temperature: 0.7,
-        }),
-      }
-    );
+const reader = response.body.getReader();  
+const decoder = new TextDecoder();  
+let fullReply = '';  
 
-    if (!response.ok || !response.body) {
-      return sendError(res, "AI service error");
-    }
+try {  
+  while (true) {  
+    const { done, value } = await reader.read();  
+    if (done) break;  
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    const chunk = decoder.decode(value);  
+    const lines = chunk.split('\n').filter(line => line.trim());  
 
-    let full = "";
-    let buffer = "";
-    let got = false;
+    for (const line of lines) {  
+      if (line.startsWith('data: ')) {  
+        const data = line.slice(6);  
+        if (data === '[DONE]') break;  
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+        try {  
+          const parsed = JSON.parse(data);  
+          const content = parsed.choices?.[0]?.delta?.content || '';  
+          if (content) {  
+            fullReply += content;  
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);  
+          }  
+        } catch (e) {}  
+      }  
+    }  
+  }  
+} catch (e) {  
+  console.error('Stream error:', e);  
+  res.write(`data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`);  
+}  
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+// FIX: SAVE AVANT res.end() POUR ÉVITER DISPARITION AU RELOAD  
+const replyTime = Date.now();  
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
+// STRUCTURE UNIFIÉE BOT - MÊMES CHAMPS QUE USER  
+const botMsgData = {  
+  role: "assistant",  
+  type: "bot",  
+  text: fullReply || "",  
+  content: fullReply || "",  
+  timestamp: replyTime,  
+  convId,  
+};  
 
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") continue;
+try {  
+  // 1. Save dans messages pour reload  
+  await db.collection("users").doc(userId).collection("messages").add(botMsgData);  
 
-        try {
-          const json = JSON.parse(data);
-          const content = json.choices?.[0]?.delta?.content;
+  // 2. Update conversations avec transaction atomique  
+  const convRef = db.collection("conversations").doc(userId);  
+  await db.runTransaction(async (t) => {  
+    const convSnap = await t.get(convRef);  
+    let conversations = convSnap.exists? convSnap.data().conversations || [] : [];  
+    let currentConv = conversations.find(c => c.id === convId);  
+    if (!currentConv) {  
+      currentConv = { id: convId, title: message.slice(0, 40), messages: [], date: now, updatedAt: now };  
+      conversations.unshift(currentConv);  
+    }  
+    currentConv.messages.push(userMsgData, botMsgData);  
+    currentConv.updatedAt = replyTime;  
+    if (conversations.length > 30) conversations = conversations.slice(0, 30);  
+    t.set(convRef, { conversations });  
+  });  
+} catch (dbErr) {  
+  console.error("Firestore save error:", dbErr);  
+  res.write(`data: ${JSON.stringify({ error: "Erreur sauvegarde DB" })}\n\n`);  
+}  
 
-          if (content) {
-            got = true;
-            full += content;
-            write(res, { content });
-          }
-        } catch {}
-      }
-    }
+res.write(`data: [DONE]\n\n`);  
+res.end();  
 
-    if (!got) {
-      return sendError(res, "Empty response from AI");
-    }
+cleanupOldData(db, userId).catch(e => console.error("Cleanup error:", e));
 
-    // 7. ENREGISTREMENT DE LA RÉPONSE DE L'ASSISTANT
-    await messagesRef.add({
-      role: "assistant",
-      text: full,
-      timestamp: Date.now(),
-      convId,
-    });
-
-    closeStream(res);
-  } catch (err) {
-    console.error(err);
-    sendError(res, "Server error");
-  }
+} catch (err) {
+console.error("Chat error:", err);
+if (!res.headersSent) {
+res.status(500).json({ error: "Server crash", details: err.message });
 }
+}
+}
+
