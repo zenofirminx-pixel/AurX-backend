@@ -70,7 +70,7 @@ export default async function handler(req, res) {
 
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 1. SUPPRESSION DES ANCIENS MESSAGES DE PLUS DE 10 MINUTES
+    // 1. SUPPRESSION DES ANCIENS MESSAGES (10 MINUTES)
     try {
       const oldMessagesSnap = await messagesRef
         .where("convId", "==", convId)
@@ -85,10 +85,10 @@ export default async function handler(req, res) {
         await batch.commit();
       }
     } catch (err) {
-      console.error("Erreur lors du nettoyage des messages :", err);
+      console.error("Erreur nettoyage messages :", err);
     }
 
-    // 2. ENREGISTREMENT DU NOUVEAU MESSAGE UTILISATEUR
+    // 2. ENREGISTREMENT DU MESSAGE UTILISATEUR
     await messagesRef.add({
       role: "user",
       text: message,
@@ -96,7 +96,6 @@ export default async function handler(req, res) {
       convId,
     });
 
-    // EXTRACTION MÉMOIRE PÉRENNE
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -104,7 +103,7 @@ export default async function handler(req, res) {
       }
     } catch {}
 
-    // 3. RÉCUPÉRATION DE L'HISTORIQUE RÉCENT (Moins de 10 minutes)
+    // 3. RÉCUPÉRATION DE L'HISTORIQUE
     let history = [];
     try {
       const snap = await messagesRef
@@ -119,7 +118,6 @@ export default async function handler(req, res) {
           content: m.text,
         }));
 
-      // Évite la duplication du message actuel s'il est déjà retourné par Firestore
       if (
         history.length > 0 &&
         history[history.length - 1].content === message &&
@@ -131,7 +129,7 @@ export default async function handler(req, res) {
       history = history.slice(-19);
     } catch {}
 
-    // 4. CHARGEMENT DES DONNÉES DE MÉMOIRE PROFONDE
+    // 4. CHARGEMENT DE LA MÉMOIRE PROFONDE
     let name = null;
     let facts = [];
     let prefs = [];
@@ -155,36 +153,36 @@ export default async function handler(req, res) {
       });
     } catch {}
 
-    // 5. CORRECTION ET INJECTION DU SYSTEM PROMPT
+    // 5. CONSTRUCTION DU BASE PROMPT ET DU CONTEXTE
     let basePrompt = "";
     try {
-      // Si buildPrompt() prend des paramètres ou doit être exécuté proprement :
       const customPrompt = buildPrompt();
       basePrompt = customPrompt ? String(customPrompt) : "Tu es AurX, un assistant IA utile et précis.";
     } catch {
       basePrompt = "Tu es AurX, un assistant IA utile et précis.";
     }
 
-    let memoryBlock = "";
-    if (name) {
-      memoryBlock += `Nom utilisateur: ${name}\nIMPORTANT: utilise son nom naturellement.\n`;
-    }
-    if (facts.length) {
-      memoryBlock += `Faits connus: ${facts.slice(0, 5).join(", ")}\n`;
-    }
-    if (prefs.length) {
-      memoryBlock += `Préférences: ${prefs.slice(0, 5).join(", ")}\n`;
+    // Formatage strict du bloc d'instructions
+    let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
+    if (name || facts.length || prefs.length) {
+      instructions += `[CONTEXTE UTILISATEUR]\n`;
+      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
+      if (facts.length) instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
+      if (prefs.length) instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
+      instructions += `[FIN DU CONTEXTE]\n\n`;
     }
 
-    const systemPrompt = memoryBlock
-      ? `${memoryBlock}\n---\n${basePrompt}`
-      : basePrompt;
-
+    // Technique d'injection : On met les instructions dans le rôle system
     const messages = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
       ...history,
-      { role: "user", content: message },
     ];
+
+    // Renforcement : On injecte un rappel des instructions système directement avec le dernier message utilisateur
+    // Cela empêche le modèle "d'oublier" le prompt à cause du poids de l'historique.
+    const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
+    
+    messages.push({ role: "user", content: finalUserContent });
 
     // 6. APPEL OPENROUTER
     const response = await fetch(
