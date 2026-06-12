@@ -2,8 +2,7 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
-import { parse, serialize } from "cookie";
-import { randomUUID } from "crypto";
+import { parse } from "cookie";
 
 export const config = { maxDuration: 60 };
 
@@ -89,48 +88,17 @@ export default async function handler(req, res) {
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
-    // ===== GESTION USERID UNIQUE =====
     const cookies = parse(req.headers.cookie || "");
-    let userId = null;
-    let setGuestCookie = false;
+    let userId = "guest_global";
 
-    // 1. Priorité au compte Google connecté
     if (cookies.aurx_session) {
       try {
-        const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
-        userId = user.id || user.sub; // ID Google unique
-        console.log("[USER] Logged in:", userId);
-      } catch (e) {
-        console.error("[USER] Session parse error:", e);
-      }
+        const user = JSON.parse(
+          Buffer.from(cookies.aurx_session, "base64").toString()
+        );
+        userId = user.sid || user.id || "guest_global";
+      } catch {}
     }
-
-    // 2. Sinon check guest existant
-    if (!userId && cookies.aurx_guest_id) {
-      userId = cookies.aurx_guest_id;
-      console.log("[USER] Existing guest:", userId);
-    }
-
-    // 3. Sinon créer nouveau guest unique
-    if (!userId) {
-      userId = `guest_${randomUUID()}`;
-      setGuestCookie = true;
-      console.log("[USER] New guest:", userId);
-    }
-
-    // Set cookie pour guests pour garder leur ID
-    if (setGuestCookie) {
-      res.setHeader("Set-Cookie", serialize("aurx_guest_id", userId, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        maxAge: 60 * 60 * 24 * 365, // 1 an
-        path: "/"
-      }));
-    }
-
-    console.log("[USER] Final userId:", userId, "convId:", convId);
-    // ===== FIN GESTION USERID =====
 
     const now = Date.now();
     const tenMinutesAgo = now - 10 * 60 * 1000;
@@ -140,9 +108,9 @@ export default async function handler(req, res) {
     // 1. SUPPRESSION DES ANCIENS MESSAGES
     try {
       const oldMessagesSnap = await messagesRef
-     .where("convId", "==", convId)
-     .where("timestamp", "<", tenMinutesAgo)
-     .get();
+      .where("convId", "==", convId)
+      .where("timestamp", "<", tenMinutesAgo)
+      .get();
 
       if (!oldMessagesSnap.empty) {
         const batch = db.batch();
@@ -174,13 +142,13 @@ export default async function handler(req, res) {
     let history = [];
     try {
       const snap = await messagesRef
-     .where("convId", "==", convId)
-     .get();
+      .where("convId", "==", convId)
+      .get();
 
       history = snap.docs
-     .map((d) => d.data())
-     .sort((a, b) => a.timestamp - b.timestamp)
-     .map((m) => ({
+      .map((d) => d.data())
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map((m) => ({
           role: m.role,
           content: m.text,
         }));
@@ -203,10 +171,10 @@ export default async function handler(req, res) {
 
     try {
       const memSnap = await db
-     .collection("users")
-     .doc(userId)
-     .collection("memory")
-     .get();
+      .collection("users")
+      .doc(userId)
+      .collection("memory")
+      .get();
 
       memSnap.forEach((doc) => {
         const d = doc.data();
@@ -220,8 +188,8 @@ export default async function handler(req, res) {
       });
     } catch {}
 
-    // 5. CONSTRUCTION DU PROMPT
-    const basePrompt = BASE_PROMPT;
+    // 5. CONSTRUCTION DU PROMPT - AVEC TON TEXTE
+    const basePrompt = BASE_PROMPT; // ← ton prompt inline
 
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
     if (name || facts.length || prefs.length) {
@@ -234,7 +202,7 @@ export default async function handler(req, res) {
 
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
-   ...history,
+    ...history,
     ];
 
     const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
