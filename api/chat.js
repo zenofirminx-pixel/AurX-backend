@@ -69,6 +69,7 @@ function closeStream(res) {
 }
 
 export default async function handler(req, res) {
+  console.log("=== START REQUEST ===");
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method!== "POST")
@@ -86,7 +87,9 @@ export default async function handler(req, res) {
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
-    // ===== FIX USERID UNIQUE =====
+    console.log("Message:", message, "convId:", convId);
+
+    // ===== USERID UNIQUE FIX =====
     const cookies = parse(req.headers.cookie || "");
     let userId = null;
     let setGuestCookie = false;
@@ -95,21 +98,21 @@ export default async function handler(req, res) {
       try {
         const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
         userId = user.id || user.sub || user.sid || user.email;
-        console.log("[AUTH] Google userId:", userId);
+        console.log("GOOGLE ID:", userId);
       } catch (e) {
-        console.error("[AUTH] Session error:", e);
+        console.error("SESSION PARSE ERROR:", e);
       }
     }
 
     if (!userId && cookies.aurx_guest_id) {
       userId = cookies.aurx_guest_id;
-      console.log("[AUTH] Existing guest:", userId);
+      console.log("GUEST ID:", userId);
     }
 
     if (!userId) {
       userId = `guest_${randomUUID()}`;
       setGuestCookie = true;
-      console.log("[AUTH] New guest:", userId);
+      console.log("NEW GUEST:", userId);
     }
 
     if (setGuestCookie) {
@@ -122,101 +125,89 @@ export default async function handler(req, res) {
       }));
     }
 
-    console.log("[USER] Final userId:", userId);
+    console.log("FINAL USERID:", userId);
     // ===== FIN FIX =====
 
     const now = Date.now();
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 1. SUPPRESSION DÉSACTIVÉE - CAUSE LE CRASH
-    // On skip pour l'instant
-
-    // 2. ENREGISTREMENT DU MESSAGE UTILISATEUR
+    // 2. ENREGISTREMENT MESSAGE
     await messagesRef.add({
       role: "user",
       text: message,
       timestamp: now,
       convId,
     });
+    console.log("USER MSG SAVED");
 
+    // 3. EXTRACT + SAVE MEMORY
     try {
       const memories = extractMemory(message);
-      console.log("[EXTRACT] Found:", memories);
+      console.log("EXTRACTED:", memories);
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
-        console.log("[SAVE] Memory saved for:", userId);
+        console.log("MEMORY SAVED");
       }
     } catch (e) {
-      console.error("[EXTRACT] Error:", e);
+      console.error("EXTRACT ERROR:", e);
     }
 
-    // 3. RÉCUPÉRATION DE L'HISTORIQUE
+    // 4. LOAD HISTORY - SANS WHERE TIMESTAMP
     let history = [];
     try {
-      const snap = await messagesRef.where("convId", "==", convId).get();
-      history = snap.docs
-       .map((d) => d.data())
-       .sort((a, b) => a.timestamp - b.timestamp)
-       .map((m) => ({ role: m.role, content: m.text }));
-
-      if (history.length > 0 && history[history.length - 1].content === message) {
-        history.pop();
-      }
-      history = history.slice(-19);
-      console.log("[HISTORY] Loaded:", history.length, "messages");
+      const snap = await messagesRef.get();
+      const allMsgs = snap.docs.map((d) => d.data());
+      history = allMsgs
+      .filter((m) => m.convId === convId)
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-19)
+      .map((m) => ({ role: m.role, content: m.text }));
+      console.log("HISTORY LOADED:", history.length);
     } catch (e) {
-      console.error("[HISTORY] Error:", e);
+      console.error("HISTORY ERROR:", e);
     }
 
-    // 4. CHARGEMENT DE LA MÉMOIRE PROFONDE
+    // 5. LOAD MEMORY
     let name = null;
     let facts = [];
     let prefs = [];
 
     try {
-      console.log("[MEMORY] Loading for:", userId);
+      console.log("LOADING MEMORY FOR:", userId);
       const memSnap = await db.collection("users").doc(userId).collection("memory").get();
-      console.log("[MEMORY] Found docs:", memSnap.size);
+      console.log("MEMORY DOCS FOUND:", memSnap.size);
 
       memSnap.forEach((doc) => {
         const d = doc.data();
-        console.log("[MEMORY] Doc:", d);
-        if (d.type === "identity" && d.key === "name") {
-          name = d.value;
-        } else if (d.type === "preference") {
-          prefs.push(d.value);
-        } else {
-          facts.push(d.value);
-        }
+        console.log("MEM DOC:", d);
+        if (d.type === "identity" && d.key === "name") name = d.value;
+        else if (d.type === "preference") prefs.push(d.value);
+        else facts.push(d.value);
       });
-      console.log("[MEMORY] Result - name:", name, "facts:", facts);
+      console.log("MEMORY RESULT:", { name, facts, prefs });
     } catch (e) {
-      console.error("[MEMORY] Error:", e);
+      console.error("MEMORY LOAD ERROR:", e);
     }
 
-    // 5. CONSTRUCTION DU PROMPT
+    // 6. BUILD PROMPT
     const basePrompt = BASE_PROMPT;
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
 
     if (name || facts.length || prefs.length) {
       instructions += `[CONTEXTE UTILISATEUR]\n`;
-      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement)\n`;
-      if (facts.length) instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
-      if (prefs.length) instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
+      if (name) instructions += `- Nom de l'utilisateur : ${name}\n`;
+      if (facts.length) instructions += `- Faits connus : ${facts.join(", ")}\n`;
+      if (prefs.length) instructions += `- Préférences : ${prefs.join(", ")}\n`;
       instructions += `[FIN DU CONTEXTE]\n\n`;
     }
 
-    console.log("[PROMPT] Instructions:", instructions);
-
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
-     ...history,
+    ...history,
+      { role: "user", content: message }
     ];
 
-    const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
-    messages.push({ role: "user", content: finalUserContent });
-
-    // 6. APPEL OPENROUTER
+    // 7. CALL AI
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -236,15 +227,12 @@ export default async function handler(req, res) {
       }
     );
 
-    if (!response.ok ||!response.body) {
-      return sendError(res, "AI service error");
-    }
+    if (!response.ok ||!response.body) return sendError(res, "AI service error");
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let full = "";
     let buffer = "";
-    let got = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -260,15 +248,12 @@ export default async function handler(req, res) {
           const json = JSON.parse(data);
           const content = json.choices?.[0]?.delta?.content;
           if (content) {
-            got = true;
             full += content;
             write(res, { content });
           }
         } catch {}
       }
     }
-
-    if (!got) return sendError(res, "Empty response from AI");
 
     await messagesRef.add({
       role: "assistant",
@@ -277,9 +262,10 @@ export default async function handler(req, res) {
       convId,
     });
 
+    console.log("=== END REQUEST ===");
     closeStream(res);
   } catch (err) {
-    console.error(err);
+    console.error("FATAL ERROR:", err);
     sendError(res, "Server error");
   }
 }
