@@ -2,7 +2,8 @@ import { buildPrompt } from "../lib/buildPrompt.js";
 import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
-import { parse } from "cookie";
+import { parse, serialize } from "cookie";
+import { randomUUID } from "crypto";
 
 export const config = { maxDuration: 60 };
 
@@ -88,40 +89,48 @@ export default async function handler(req, res) {
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
+    // ===== GESTION USERID UNIQUE POUR CHAQUE USER =====
     const cookies = parse(req.headers.cookie || "");
-    let userId = "guest_global";
+    let userId = null;
+    let setGuestCookie = false;
 
+    // 1. Compte Google connecté
     if (cookies.aurx_session) {
       try {
-        const user = JSON.parse(
-          Buffer.from(cookies.aurx_session, "base64").toString()
-        );
-        userId = user.sid || user.id || "guest_global";
+        const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
+        userId = user.id || user.sub || user.sid || user.email;
       } catch {}
     }
 
-    const now = Date.now();
-    const tenMinutesAgo = now - 10 * 60 * 1000;
+    // 2. Guest existant
+    if (!userId && cookies.aurx_guest_id) {
+      userId = cookies.aurx_guest_id;
+    }
 
+    // 3. Nouveau guest
+    if (!userId) {
+      userId = `guest_${randomUUID()}`;
+      setGuestCookie = true;
+    }
+
+    if (setGuestCookie) {
+      res.setHeader("Set-Cookie", serialize("aurx_guest_id", userId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 60 * 60 * 24 * 365,
+        path: "/"
+      }));
+    }
+
+    console.log("userId:", userId);
+    // ===== FIN GESTION USERID =====
+
+    const now = Date.now();
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 1. SUPPRESSION DES ANCIENS MESSAGES
-    try {
-      const oldMessagesSnap = await messagesRef
-      .where("convId", "==", convId)
-      .where("timestamp", "<", tenMinutesAgo)
-      .get();
-
-      if (!oldMessagesSnap.empty) {
-        const batch = db.batch();
-        oldMessagesSnap.docs.forEach((doc) => {
-          batch.delete(doc.ref);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      console.error("Erreur nettoyage messages :", err);
-    }
+    // 1. SUPPRESSION DES ANCIENS MESSAGES - DÉSACTIVÉ
+    // La query where + timestamp demande un index, on skip pour l'instant
 
     // 2. ENREGISTREMENT DU MESSAGE UTILISATEUR
     await messagesRef.add({
@@ -136,19 +145,21 @@ export default async function handler(req, res) {
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
       }
-    } catch {}
+    } catch (e) {
+      console.error("Memory extract error:", e);
+    }
 
     // 3. RÉCUPÉRATION DE L'HISTORIQUE
     let history = [];
     try {
       const snap = await messagesRef
-      .where("convId", "==", convId)
-      .get();
+    .where("convId", "==", convId)
+    .get();
 
       history = snap.docs
-      .map((d) => d.data())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map((m) => ({
+    .map((d) => d.data())
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((m) => ({
           role: m.role,
           content: m.text,
         }));
@@ -162,7 +173,9 @@ export default async function handler(req, res) {
       }
 
       history = history.slice(-19);
-    } catch {}
+    } catch (e) {
+      console.error("History error:", e);
+    }
 
     // 4. CHARGEMENT DE LA MÉMOIRE PROFONDE
     let name = null;
@@ -171,10 +184,10 @@ export default async function handler(req, res) {
 
     try {
       const memSnap = await db
-      .collection("users")
-      .doc(userId)
-      .collection("memory")
-      .get();
+    .collection("users")
+    .doc(userId)
+    .collection("memory")
+    .get();
 
       memSnap.forEach((doc) => {
         const d = doc.data();
@@ -186,10 +199,12 @@ export default async function handler(req, res) {
           facts.push(d.value);
         }
       });
-    } catch {}
+    } catch (e) {
+      console.error("Memory load error:", e);
+    }
 
-    // 5. CONSTRUCTION DU PROMPT - AVEC TON TEXTE
-    const basePrompt = BASE_PROMPT; // ← ton prompt inline
+    // 5. CONSTRUCTION DU PROMPT
+    const basePrompt = BASE_PROMPT;
 
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
     if (name || facts.length || prefs.length) {
@@ -202,7 +217,7 @@ export default async function handler(req, res) {
 
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
-    ...history,
+  ...history,
     ];
 
     const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
