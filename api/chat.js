@@ -7,7 +7,6 @@ import { randomUUID } from "crypto";
 
 export const config = { maxDuration: 60 };
 
-// ===== TON PROMPT ICI =====
 const BASE_PROMPT = `# COMMUNICATION STYLE
 Utilise un style naturel, fluide et agréable à lire.
 Reste direct, précis et pertinent.
@@ -40,7 +39,6 @@ AurX a une mémoire externe qu'il peut utiliser
 Tu es AurX, un assistant intelligent conçu pour fournir des réponses utiles, claires et naturelles.
 AurX a été créé par un développeur congolais.
 si l'user demande ton créateur réponds juste naturellement.`;
-// ===== FIN DU PROMPT =====
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
@@ -82,35 +80,36 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === "string"? JSON.parse(req.body) : req.body || {};
-
     const message = body.message?.trim();
     const convId = body.convId;
 
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
-    // ===== GESTION USERID UNIQUE POUR CHAQUE USER =====
+    // ===== FIX USERID UNIQUE =====
     const cookies = parse(req.headers.cookie || "");
     let userId = null;
     let setGuestCookie = false;
 
-    // 1. Compte Google connecté
     if (cookies.aurx_session) {
       try {
         const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
         userId = user.id || user.sub || user.sid || user.email;
-      } catch {}
+        console.log("[AUTH] Google userId:", userId);
+      } catch (e) {
+        console.error("[AUTH] Session error:", e);
+      }
     }
 
-    // 2. Guest existant
     if (!userId && cookies.aurx_guest_id) {
       userId = cookies.aurx_guest_id;
+      console.log("[AUTH] Existing guest:", userId);
     }
 
-    // 3. Nouveau guest
     if (!userId) {
       userId = `guest_${randomUUID()}`;
       setGuestCookie = true;
+      console.log("[AUTH] New guest:", userId);
     }
 
     if (setGuestCookie) {
@@ -123,14 +122,14 @@ export default async function handler(req, res) {
       }));
     }
 
-    console.log("userId:", userId);
-    // ===== FIN GESTION USERID =====
+    console.log("[USER] Final userId:", userId);
+    // ===== FIN FIX =====
 
     const now = Date.now();
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 1. SUPPRESSION DES ANCIENS MESSAGES - DÉSACTIVÉ
-    // La query where + timestamp demande un index, on skip pour l'instant
+    // 1. SUPPRESSION DÉSACTIVÉE - CAUSE LE CRASH
+    // On skip pour l'instant
 
     // 2. ENREGISTREMENT DU MESSAGE UTILISATEUR
     await messagesRef.add({
@@ -142,39 +141,31 @@ export default async function handler(req, res) {
 
     try {
       const memories = extractMemory(message);
+      console.log("[EXTRACT] Found:", memories);
       if (Array.isArray(memories) && memories.length > 0) {
         await saveMemory(db, userId, memories);
+        console.log("[SAVE] Memory saved for:", userId);
       }
     } catch (e) {
-      console.error("Memory extract error:", e);
+      console.error("[EXTRACT] Error:", e);
     }
 
     // 3. RÉCUPÉRATION DE L'HISTORIQUE
     let history = [];
     try {
-      const snap = await messagesRef
-    .where("convId", "==", convId)
-    .get();
-
+      const snap = await messagesRef.where("convId", "==", convId).get();
       history = snap.docs
-    .map((d) => d.data())
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .map((m) => ({
-          role: m.role,
-          content: m.text,
-        }));
+       .map((d) => d.data())
+       .sort((a, b) => a.timestamp - b.timestamp)
+       .map((m) => ({ role: m.role, content: m.text }));
 
-      if (
-        history.length > 0 &&
-        history[history.length - 1].content === message &&
-        history[history.length - 1].role === "user"
-      ) {
+      if (history.length > 0 && history[history.length - 1].content === message) {
         history.pop();
       }
-
       history = history.slice(-19);
+      console.log("[HISTORY] Loaded:", history.length, "messages");
     } catch (e) {
-      console.error("History error:", e);
+      console.error("[HISTORY] Error:", e);
     }
 
     // 4. CHARGEMENT DE LA MÉMOIRE PROFONDE
@@ -183,14 +174,13 @@ export default async function handler(req, res) {
     let prefs = [];
 
     try {
-      const memSnap = await db
-    .collection("users")
-    .doc(userId)
-    .collection("memory")
-    .get();
+      console.log("[MEMORY] Loading for:", userId);
+      const memSnap = await db.collection("users").doc(userId).collection("memory").get();
+      console.log("[MEMORY] Found docs:", memSnap.size);
 
       memSnap.forEach((doc) => {
         const d = doc.data();
+        console.log("[MEMORY] Doc:", d);
         if (d.type === "identity" && d.key === "name") {
           name = d.value;
         } else if (d.type === "preference") {
@@ -199,29 +189,31 @@ export default async function handler(req, res) {
           facts.push(d.value);
         }
       });
+      console.log("[MEMORY] Result - name:", name, "facts:", facts);
     } catch (e) {
-      console.error("Memory load error:", e);
+      console.error("[MEMORY] Error:", e);
     }
 
     // 5. CONSTRUCTION DU PROMPT
     const basePrompt = BASE_PROMPT;
-
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
+
     if (name || facts.length || prefs.length) {
       instructions += `[CONTEXTE UTILISATEUR]\n`;
-      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
+      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement)\n`;
       if (facts.length) instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
       if (prefs.length) instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
       instructions += `[FIN DU CONTEXTE]\n\n`;
     }
 
+    console.log("[PROMPT] Instructions:", instructions);
+
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
-  ...history,
+     ...history,
     ];
 
     const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
-
     messages.push({ role: "user", content: finalUserContent });
 
     // 6. APPEL OPENROUTER
@@ -250,7 +242,6 @@ export default async function handler(req, res) {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
     let full = "";
     let buffer = "";
     let got = false;
@@ -258,21 +249,16 @@ export default async function handler(req, res) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
-
         const data = line.slice(6).trim();
         if (data === "[DONE]") continue;
-
         try {
           const json = JSON.parse(data);
           const content = json.choices?.[0]?.delta?.content;
-
           if (content) {
             got = true;
             full += content;
@@ -282,11 +268,8 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!got) {
-      return sendError(res, "Empty response from AI");
-    }
+    if (!got) return sendError(res, "Empty response from AI");
 
-    // 7. ENREGISTREMENT DE LA RÉPONSE
     await messagesRef.add({
       role: "assistant",
       text: full,
