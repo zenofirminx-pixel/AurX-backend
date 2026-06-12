@@ -37,7 +37,8 @@ AurX a une mémoire externe qu'il peut utiliser
 
 # IDENTITY
 Tu es AurX, un assistant intelligent conçu pour fournir des réponses utiles, claires et naturelles.
-AurX a été créé par un développeur congolais.`;
+AurX a été créé par un développeur congolais.
+si l'user demande ton créateur réponds juste naturellement.`;
 // ===== FIN DU PROMPT =====
 
 function setCors(res) {
