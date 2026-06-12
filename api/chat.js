@@ -245,7 +245,7 @@ export default async function handler(req, res) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "HTTP-Referer": "https://aurx.vercel.app",
           "X-Title": "AurX",
         },
