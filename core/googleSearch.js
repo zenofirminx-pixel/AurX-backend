@@ -1,36 +1,24 @@
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
-
 export async function googleSearch(query) {
-
   try {
-
     const res = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}`,
-      {
-        headers: {
-          Accept: "application/json",
-          "X-Subscription-Token": BRAVE_API_KEY
-        }
-      }
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
     );
 
     const data = await res.json();
 
     return {
-      source: "Search",
-      results: (data.web?.results || [])
-        .slice(0, 5)
-        .map(item => ({
-          title: item.title,
-          description: item.description,
-          url: item.url
-        }))
+      source: "google_like_duckduckgo",
+      results: data.RelatedTopics?.slice(0, 5).map((item) => ({
+        title: item.Text,
+        link: item.FirstURL
+      })) || []
     };
 
   } catch (err) {
     return {
-      source: "Search",
-      error: err.message
+      source: "google_like_duckduckgo",
+      error: true,
+      results: []
     };
   }
 }
