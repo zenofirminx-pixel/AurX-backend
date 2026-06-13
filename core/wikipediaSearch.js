@@ -1,5 +1,3 @@
-// core/wikipediaSearch.js
-
 export async function wikipediaSearch(query) {
   try {
     const url =
