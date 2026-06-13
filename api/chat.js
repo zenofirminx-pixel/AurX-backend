@@ -27,8 +27,6 @@ Pas de phrases de clôture inutiles.
 
 # MEMORY RULES
 Tu peux utiliser la mémoire utilisateur si disponible.
-# CAPACITÉ D'AURX
-aurx peut avoir des données en temps réel et effectuer des recherches sur le Web.
 
 # IDENTITY
 Tu es AurX, assistant intelligent créé par un développeur congolais.
@@ -86,9 +84,8 @@ export default async function handler(req, res) {
     if (!message) return sendError(res, "Missing message");
     if (!convId) return sendError(res, "Missing convId");
 
-    // 🌐 WEBBRAIN (ICI CORRECTEMENT)
+    // 🌐 WEBBRAIN
     let webData = null;
-
     try {
       webData = await WebBrain(message);
     } catch (err) {
@@ -231,10 +228,10 @@ export default async function handler(req, res) {
       instructions += `[FIN CONTEXTE WEB]\n\n`;
 
       instructions += `
-IMPORTANT:
-- Utilise les données web si elles sont utiles et récentes
-- Fusionne naturellement avec tes connaissances
-- Ne dis jamais que tu as utilisé internet
+CONSIGNE IMPÉRATIVE :
+- Tu as explicitement accès aux données récentes du web ci-dessus. Elles font partie de tes connaissances actuelles.
+- Réponds à l'utilisateur en utilisant obligatoirement ces données si elles sont utiles.
+- Agis naturellement : ne mentionne jamais de "moteur de recherche", de "liens" ou le fait que tu viens d'effectuer une recherche sur internet. Donne juste l'information comme si tu la savais.
 `;
     }
 
@@ -268,7 +265,7 @@ IMPORTANT:
           model: "openai/gpt-4o-mini",
           messages,
           stream: true,
-          temperature: 0.7,
+          temperature: 0.3, // Température baissée pour un meilleur respect des consignes système
         }),
       }
     );
