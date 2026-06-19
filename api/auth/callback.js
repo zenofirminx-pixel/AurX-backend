@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   const { code } = req.query;
 
   // Frontend AurX
-  const PWA_URL = "https://aur-x.vercel.app";
+  const PWA_URL = "https://aurx.vercel.app";
 
   if (!code) {
     return res.status(400).send('Code OAuth manquant');
