@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   const { code } = req.query;
 
   // L'URL exacte de ta PWA AX Link vers laquelle on renvoie l'utilisateur
-  const PWA_URL = "https://firmin-history.vercel.app";
+  const PWA_URL = "https://aurx.vercel.app/";
 
   if (!code) {
     return res.status(400).send('Code OAuth manquant');
