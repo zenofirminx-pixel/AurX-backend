@@ -3,7 +3,6 @@ import db from '../initMemory.js';
 export default async function handler(req, res) {
   const { code } = req.query;
 
-  // Frontend AurX
   const PWA_URL = "https://aurx.vercel.app";
 
   if (!code) {
@@ -16,7 +15,8 @@ export default async function handler(req, res) {
   const REDIRECT_URI = `${protocol}://${host}/api/auth/callback`;
 
   try {
-    // 1. Échange code OAuth contre token Google
+
+    // 1. Échange du code Google contre un access token
     const tokenRes = await fetch(
       'https://oauth2.googleapis.com/token',
       {
@@ -41,7 +41,7 @@ export default async function handler(req, res) {
     }
 
 
-    // 2. Infos Google
+    // 2. Récupération profil Google
     const userRes = await fetch(
       'https://www.googleapis.com/oauth2/v2/userinfo',
       {
@@ -54,7 +54,7 @@ export default async function handler(req, res) {
     const gUser = await userRes.json();
 
 
-    // 3. ID utilisateur AurX
+    // 3. ID AurX
     const uid = `google_${gUser.id}`;
 
 
@@ -64,11 +64,8 @@ export default async function handler(req, res) {
       email: gUser.email,
       name: gUser.name,
       picture: gUser.picture,
-
       provider: "google",
-
       locale: gUser.locale || "fr",
-
       lastLogin: Date.now()
     };
 
@@ -80,26 +77,26 @@ export default async function handler(req, res) {
 
 
 
-    // 5. Session AurX
+    // 5. Session attendue par /api/auth/me
     const sessionData = {
       id: uid,
       email: gUser.email,
       name: gUser.name,
       picture: gUser.picture,
+      provider: "google",
       locale: gUser.locale || "fr"
     };
 
 
-    const sessionToken = Buffer
-      .from(JSON.stringify(sessionData))
-      .toString('base64');
+    // Pas de base64 ici, /api/auth/me fait JSON.parse()
+    const sessionToken = JSON.stringify(sessionData);
 
 
-    // 6. Création cookie attendu par AurX
+    // 6. Cookie de session AurX
     res.setHeader(
       'Set-Cookie',
       [
-        `aurx_session=${sessionToken}`,
+        `aurx_session=${encodeURIComponent(sessionToken)}`,
         'Path=/',
         'HttpOnly',
         'Secure',
@@ -109,7 +106,7 @@ export default async function handler(req, res) {
     );
 
 
-    // 7. Retour PWA
+    // 7. Retour vers AurX
     return res.redirect(PWA_URL);
 
 
