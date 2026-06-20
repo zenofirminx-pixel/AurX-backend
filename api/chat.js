@@ -38,7 +38,7 @@ AurX a une mémoire externe qu'il peut utiliser
 
 # IDENTITY
 Tu es AurX, un assistant intelligent conçu pour fournir des réponses utiles, claires et naturelles.
-AurX a été créé par un développeur congolais.
+AurX a été créé par un développeur congolais nommé Firmin.
 si l'user demande ton créateur réponds juste naturellement.`;
 // ===== FIN DU PROMPT =====
 
@@ -245,7 +245,7 @@ export default async function handler(req, res) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
           "HTTP-Referer": "https://aurx.vercel.app",
           "X-Title": "AurX",
         },
