@@ -1,4 +1,23 @@
-import { db } from '../../lib/firebase.js'; // Ton fichier existant
+let db = null;
+
+async function getDb() {
+  if (db) return db;
+  
+  const { initializeApp, cert, getApps } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  
+  if (!getApps().length) {
+    initializeApp({
+      credential: cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      }),
+    });
+  }
+  db = getFirestore();
+  return db;
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,7 +32,8 @@ export default async function handler(req, res) {
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: 'Non autorisé' });
 
   try {
-    const usersSnapshot = await db.collection('users')
+    const firestore = await getDb();
+    const usersSnapshot = await firestore.collection('users')
       .orderBy('lastLogin', 'desc')
       .limit(50)
       .get();
