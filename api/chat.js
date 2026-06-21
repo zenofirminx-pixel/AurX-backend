@@ -52,34 +52,26 @@ export default async function handler(req, res) {
         : req.body || {};
 
     const message = body.message?.trim();
-    const convId = body.convId;
-
     if (!message) return sendError(res, "Missing message");
-    if (!convId) return sendError(res, "Missing convId");
 
     const cookies = parse(req.headers.cookie || "");
     let userId = null;
-    let isGuest = false;
 
-    // ===== SESSION SAFE PARSING (FIX CRASH) =====
+    // ===== SESSION SAFE (FIX COOKIE CRASH) =====
     if (cookies.aurx_session) {
       try {
         const decoded = Buffer.from(cookies.aurx_session, "base64").toString();
 
-        // SAFE PARSE
-        userId = JSON.parse(decoded).id ||
-                 JSON.parse(decoded).sid ||
-                 JSON.parse(decoded).email;
+        const session = JSON.parse(decoded);
 
+        userId = session?.id || session?.sid || session?.email;
       } catch (err) {
-        console.error("Erreur décodage session cookie :", err);
+        console.error("Cookie session error:", err);
       }
     }
 
     // ===== GUEST MODE =====
     if (!userId) {
-      isGuest = true;
-
       if (cookies.aurx_guest_id) {
         userId = cookies.aurx_guest_id;
       } else {
@@ -106,10 +98,9 @@ export default async function handler(req, res) {
       .doc(userId)
       .collection("messages");
 
-    // ===== CLEAN OLD MESSAGES =====
+    // ===== CLEAN OLD MESSAGES (NO convId) =====
     try {
       const oldMessagesSnap = await messagesRef
-        .where("convId", "==", convId)
         .where("timestamp", "<", tenMinutesAgo)
         .get();
 
@@ -119,7 +110,7 @@ export default async function handler(req, res) {
         await batch.commit();
       }
     } catch (err) {
-      console.error("Erreur nettoyage messages :", err);
+      console.error("Cleanup error:", err);
     }
 
     // ===== SAVE USER MESSAGE =====
@@ -127,10 +118,9 @@ export default async function handler(req, res) {
       role: "user",
       text: message,
       timestamp: now,
-      convId,
     });
 
-    // ===== MEMORY EXTRACTION =====
+    // ===== MEMORY =====
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -138,10 +128,13 @@ export default async function handler(req, res) {
       }
     } catch {}
 
-    // ===== HISTORY =====
+    // ===== HISTORY (NO convId) =====
     let history = [];
+
     try {
-      const snap = await messagesRef.where("convId", "==", convId).get();
+      const snap = await messagesRef
+        .where("timestamp", ">", tenMinutesAgo)
+        .get();
 
       history = snap.docs
         .map((d) => d.data())
@@ -151,13 +144,6 @@ export default async function handler(req, res) {
           content: m.text,
         }))
         .slice(-19);
-
-      if (
-        history.length &&
-        history[history.length - 1].content === message
-      ) {
-        history.pop();
-      }
     } catch {}
 
     // ===== MEMORY LOAD =====
@@ -185,19 +171,16 @@ export default async function handler(req, res) {
       });
     } catch {}
 
-    // ===== PROMPT NOW FROM EXTERNAL FILE =====
+    // ===== PROMPT =====
     const basePrompt = buildPrompt();
 
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
 
     if (name || facts.length || prefs.length) {
       instructions += `[CONTEXTE UTILISATEUR]\n`;
-      if (name)
-        instructions += `- Nom : ${name}\n`;
-      if (facts.length)
-        instructions += `- Faits : ${facts.slice(0, 5).join(", ")}\n`;
-      if (prefs.length)
-        instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
+      if (name) instructions += `- Nom: ${name}\n`;
+      if (facts.length) instructions += `- Faits: ${facts.slice(0, 5).join(", ")}\n`;
+      if (prefs.length) instructions += `- Préférences: ${prefs.slice(0, 5).join(", ")}\n`;
       instructions += `[FIN CONTEXTE]\n\n`;
     }
 
@@ -207,12 +190,11 @@ export default async function handler(req, res) {
         content: `${instructions}Reste strictement dans ton rôle.`,
       },
       ...history,
+      {
+        role: "user",
+        content: message,
+      },
     ];
-
-    messages.push({
-      role: "user",
-      content: message,
-    });
 
     // ===== OPENROUTER =====
     const response = await fetch(
@@ -278,7 +260,6 @@ export default async function handler(req, res) {
       role: "assistant",
       text: full,
       timestamp: Date.now(),
-      convId,
     });
 
     closeStream(res);
