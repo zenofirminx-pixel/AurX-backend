@@ -1,23 +1,17 @@
-let db = null;
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
-async function getDb() {
-  if (db) return db;
-  
-  const { initializeApp, cert, getApps } = await import('firebase-admin/app');
-  const { getFirestore } = await import('firebase-admin/firestore');
-  
-  if (!getApps().length) {
-    initializeApp({
-      credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      }),
-    });
-  }
-  db = getFirestore();
-  return db;
+const serviceAccount = {
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+};
+
+if (!getApps().length) {
+  initializeApp({ credential: cert(serviceAccount) });
 }
+
+const db = getFirestore();
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -27,13 +21,13 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
+  // Vérifie le token admin
   const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
   const token = req.headers['authorization']?.replace('Bearer ', '');
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: 'Non autorisé' });
 
   try {
-    const firestore = await getDb();
-    const usersSnapshot = await firestore.collection('users')
+    const usersSnapshot = await db.collection('users')
       .orderBy('lastLogin', 'desc')
       .limit(50)
       .get();
@@ -44,7 +38,7 @@ export default async function handler(req, res) {
         name: data.displayName || data.name || 'Anonyme',
         email: data.email,
         photo: data.photoURL || `https://i.pravatar.cc/40?u=${doc.id}`,
-        lastLogin: data.lastLogin?.toDate?.() || null,
+        lastLogin: data.lastLogin?.toDate?.() || data.lastLogin || null,
         messageCount: data.messageCount || 0,
         status: data.status || 'inconnu',
         langue: data.langue || data.language || 'fr'
@@ -54,6 +48,6 @@ export default async function handler(req, res) {
     return res.status(200).json(users);
   } catch (error) {
     console.error('Firestore error:', error);
-    return res.status(500).json({ error: 'Erreur Firestore' });
+    return res.status(500).json({ error: error.message });
   }
 }
