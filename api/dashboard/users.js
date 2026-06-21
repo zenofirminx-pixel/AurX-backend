@@ -1,40 +1,40 @@
-import db from "../initMemory.js";
+import admin from "firebase-admin";
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
+  });
+}
+const db = admin.firestore();
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://dashboard-for-aurx.vercel.app");
-
+  
   try {
-    const usersSnap = await db.collection("users").get();
+    const snap = await db.collection("users").get();
     const users = [];
 
-    for (const u of usersSnap.docs) {
-      const memSnap = await u.ref.collection("memory").get();
-      let name = null, email = null, verified = false;
-
-      memSnap.forEach(doc => {
-        const d = doc.data();
-        if (d.key === "name") name = d.value;
-        if (d.key === "email") email = d.value;
-        if (d.key === "verified") verified = d.value;
+    for (const doc of snap.docs) {
+      const uid = doc.id; // google_110618639455189356267
+      const memSnap = await db.collection("users").doc(uid).collection("memory").get();
+      
+      let data = { uid, name: uid, email: null, verified: false };
+      memSnap.forEach(m => {
+        const {key, value} = m.data();
+        if (key === "name") data.name = value;
+        if (key === "email") data.email = value;
+        if (key === "verified") data.verified = value;
       });
 
-      const lastMsg = await u.ref.collection("messages")
-      .orderBy("timestamp", "desc").limit(1).get();
-      const lastActive = lastMsg.empty? null : lastMsg.docs[0].data().timestamp;
-
-      users.push({
-        uid: u.id, // ex: google_110618639455189356267
-        name: name || u.id,
-        email,
-        verified,
-        lastActive,
-        msgCount: (await u.ref.collection("messages").get()).size
-      });
+      users.push(data);
     }
 
-    res.json({ users: users.sort((a,b)=>b.lastActive-a.lastActive) });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(200).json({ users });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 }
