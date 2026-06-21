@@ -13,9 +13,9 @@ export default function handler(req, res) {
 
   const { email, token } = req.body;
   
-  // CONFIG EN DUR - CHANGE CES VALEURS
-  const ADMIN_TOKEN = 'aurx_06092008.jsx';
-  const ADMIN_EMAILS = ['firminphinees@gmail.com']; // Mets ton vrai mail ici
+  // CONFIG VIA ENV VARS
+  const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+  const ADMIN_EMAILS = process.env.ADMIN_EMAILS?.split(',') || [];
 
   if (!ADMIN_EMAILS.includes(email)) {
     return res.status(403).json({ error: 'Email non autorisé' });
