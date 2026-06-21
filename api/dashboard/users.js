@@ -1,23 +1,26 @@
+// api/dashboard/users.js
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
-if (!getApps().length) {
+const getDb = () => {
+  if (getApps().length) return getFirestore();
+  
+  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
+    throw new Error('Missing Firebase env vars');
+  }
+
   initializeApp({
     credential: cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
     }),
   });
-}
-
-const db = getFirestore();
+  return getFirestore();
+};
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -26,10 +29,8 @@ export default async function handler(req, res) {
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: 'Non autorisé' });
 
   try {
-    const usersSnapshot = await db.collection('users')
-      .orderBy('lastLogin', 'desc')
-      .limit(50)
-      .get();
+    const db = getDb();
+    const usersSnapshot = await db.collection('users').limit(50).get();
 
     const users = usersSnapshot.docs.map(doc => {
       const data = doc.data();
