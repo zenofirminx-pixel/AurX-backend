@@ -1,43 +1,40 @@
 import db from "../initMemory.js";
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
+  res.setHeader("Access-Control-Allow-Origin", "https://dashboard-for-aurx.vercel.app");
 
   try {
-    console.log("1. Récupération collection users...");
     const usersSnap = await db.collection("users").get();
-    console.log(`2. Trouvé ${usersSnap.size} docs users`);
-
     const users = [];
+
     for (const u of usersSnap.docs) {
-      console.log(`3. Traitement user: ${u.id}`);
+      const memSnap = await u.ref.collection("memory").get();
+      let name = null, email = null, verified = false;
 
-      // Récup nom depuis memory
-      const memSnap = await u.ref.collection("memory")
-       .where("key", "==", "name").limit(1).get();
-      const name = memSnap.empty? null : memSnap.docs[0].data().value;
+      memSnap.forEach(doc => {
+        const d = doc.data();
+        if (d.key === "name") name = d.value;
+        if (d.key === "email") email = d.value;
+        if (d.key === "verified") verified = d.value;
+      });
 
-      // Dernier message
       const lastMsg = await u.ref.collection("messages")
-       .orderBy("timestamp", "desc").limit(1).get();
+      .orderBy("timestamp", "desc").limit(1).get();
       const lastActive = lastMsg.empty? null : lastMsg.docs[0].data().timestamp;
 
-      const msgCount = (await u.ref.collection("messages").get()).size;
-
       users.push({
-        uid: u.id,
+        uid: u.id, // ex: google_110618639455189356267
         name: name || u.id,
-        isGuest: u.id.startsWith("guest_"),
+        email,
+        verified,
         lastActive,
-        msgCount
+        msgCount: (await u.ref.collection("messages").get()).size
       });
     }
 
-    console.log(`4. Renvoi ${users.length} users`);
-    res.json({ users });
+    res.json({ users: users.sort((a,b)=>b.lastActive-a.lastActive) });
 
   } catch (err) {
-    console.error("Users error:", err);
     res.status(500).json({ error: err.message });
   }
 }
