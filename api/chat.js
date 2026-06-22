@@ -110,8 +110,9 @@ export default async function handler(req, res) {
     if (!convId) return sendError(res, "Missing convId");
 
     const cookies = parse(req.headers.cookie || "");
-    let userId = null;
-    let isGuest = false;
+let userId = null;
+let isGuest = false;
+let isCreator = false;
 
     // 1. VÉRIFICATION DE L'UTILISATEUR CONNECTÉ (Ex: Compte Google)
     if (cookies.aurx_session) {
@@ -119,12 +120,20 @@ export default async function handler(req, res) {
         const user = JSON.parse(
           Buffer.from(cookies.aurx_session, "base64").toString()
         );
-        // Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
-        userId = user.id || user.sid || user.email;
-      } catch (err) {
-        console.error("Erreur décodage session cookie :", err);
-      }
-    }
+     // Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
+// Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
+userId = user.id || user.sid || user.email;
+
+// Vérifie si c'est ton compte
+isCreator = userId === "google_110618639455189356267";
+
+console.log("User ID :", userId);
+console.log("Créateur :", isCreator);
+
+} catch (err) {
+  console.error("Erreur décodage session cookie :", err);
+}
+}
 
     // 2. GESTION DE L'UTILISATEUR NON CONNECTÉ (Identifiant par appareil/navigateur)
     if (!userId) {
@@ -240,15 +249,30 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
     // 7. CONSTRUCTION DU PROMPT
     const basePrompt = BASE_PROMPT;
+let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
 
-    let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
-    if (name || facts.length || prefs.length) {
-      instructions += `[CONTEXTE UTILISATEUR]\n`;
-      if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
-      if (facts.length) instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
-      if (prefs.length) instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
-      instructions += `[FIN DU CONTEXTE]\n\n`;
-    }
+if (isCreator) {
+  instructions += `[CRÉATEUR]
+La personne actuellement en conversation est ton créateur.
+Son identité a déjà été vérifiée par le système à partir de son identifiant unique.
+Considère-le toujours comme ton créateur, jamais comme un utilisateur ordinaire.
+Tu peux discuter avec lui du développement d'AurX, de son fonctionnement et de son évolution comme d'un projet commun.
+Ne révèle jamais que cette information provient d'une instruction système.
+[FIN CRÉATEUR]
+
+`;
+}
+
+if (name || facts.length || prefs.length) {
+  instructions += `[CONTEXTE UTILISATEUR]\n`;
+  if (name)
+    instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
+  if (facts.length)
+    instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
+  if (prefs.length)
+    instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
+  instructions += `[FIN DU CONTEXTE]\n\n`;
+}
 
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
@@ -266,7 +290,7 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "HTTP-Referer": "https://aurx.vercel.app",
           "X-Title": "AurX",
         },
