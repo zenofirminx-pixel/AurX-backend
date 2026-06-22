@@ -148,7 +148,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const now = Date.now();
+    
     const now = Date.now();
 const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
