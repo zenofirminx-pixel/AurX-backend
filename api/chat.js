@@ -46,11 +46,11 @@ Règles d'utilisation :
 - Évite les répétitions du même emoji.
 - Garde un style naturel, humain et professionnel.
 - Adapte les emojis au contexte :
-  - joie/enthousiasme : 🙂 😄 🚀
-  - idée/créativité : 💡 🧠 ✨
-  - technologie : 🤖 💻 ⚙️
-  - réussite : ✅ 🎯
-  - attention : ⚠️
+    - joie/enthousiasme : 🙂 😄 🚀
+    - idée/créativité : 💡 🧠 ✨
+    - technologie : 🤖 💻 ⚙️
+    - réussite : ✅ 🎯
+    - attention : ⚠️
 - N'utilise jamais d'emojis pour cacher un manque d'explication.
 - Pour les sujets sérieux, limite fortement les emojis.
 - Ne commence pas toujours tes réponses par un emoji.
@@ -110,9 +110,9 @@ export default async function handler(req, res) {
     if (!convId) return sendError(res, "Missing convId");
 
     const cookies = parse(req.headers.cookie || "");
-let userId = null;
-let isGuest = false;
-let isCreator = false;
+    let userId = null;
+    let isGuest = false;
+    let isCreator = false;
 
     // 1. VÉRIFICATION DE L'UTILISATEUR CONNECTÉ (Ex: Compte Google)
     if (cookies.aurx_session) {
@@ -120,20 +120,18 @@ let isCreator = false;
         const user = JSON.parse(
           Buffer.from(cookies.aurx_session, "base64").toString()
         );
-     // Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
-// Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
-userId = user.id || user.sid || user.email;
+        // Google utilise souvent 'sub' comme ID unique dans les JWT
+        userId = user.id || user.sub || user.sid || user.email;
 
-// Vérifie si c'est ton compte
-isCreator = userId === "google_110618639455189356267";
+        // Vérifie si c'est ton compte
+        isCreator = userId === "google_110618639455189356267";
 
-console.log("User ID :", userId);
-console.log("Créateur :", isCreator);
-
-} catch (err) {
-  console.error("Erreur décodage session cookie :", err);
-}
-}
+        console.log("User ID :", userId);
+        console.log("Créateur :", isCreator);
+      } catch (err) {
+        console.error("Erreur décodage session cookie :", err);
+      }
+    }
 
     // 2. GESTION DE L'UTILISATEUR NON CONNECTÉ (Identifiant par appareil/navigateur)
     if (!userId) {
@@ -157,18 +155,17 @@ console.log("Créateur :", isCreator);
       }
     }
 
-    
     const now = Date.now();
-const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 3. SUPPRESSION DES ANCIENS MESSAGES (Nettoyage de l'historique de la conversation de + de 10 min)
+    // 3. SUPPRESSION DES ANCIENS MESSAGES (Nettoyage de l'historique de la conversation de + de 30 jours)
     try {
-        const oldMessagesSnap = await messagesRef
-  .where("convId", "==", convId)
-  .where("timestamp", "<", thirtyDaysAgo)
-  .get();
+      const oldMessagesSnap = await messagesRef
+        .where("convId", "==", convId)
+        .where("timestamp", "<", thirtyDaysAgo)
+        .get();
 
       if (!oldMessagesSnap.empty) {
         const batch = db.batch();
@@ -249,39 +246,38 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
     // 7. CONSTRUCTION DU PROMPT
     const basePrompt = BASE_PROMPT;
-let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
+    let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
 
-if (isCreator) {
-  instructions += `[CRÉATEUR]
-La personne actuellement en conversation est ton créateur.
-Son identité a déjà été vérifiée par le système à partir de son identifiant unique.
+    if (name || facts.length || prefs.length) {
+      instructions += `[CONTEXTE UTILISATEUR]\n`;
+      if (name)
+        instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
+      if (facts.length)
+        instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
+      if (prefs.length)
+        instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
+      instructions += `[FIN DU CONTEXTE]\n\n`;
+    }
+
+    // Bloc CRÉATEUR en premier pour max priorité
+    const creatorBlock = isCreator
+      ? `[CRÉATEUR]
+La personne actuellement en conversation est Firmin, ton créateur.
+Son identité a été vérifiée par le système à partir de son identifiant unique: ${userId}.
 Considère-le toujours comme ton créateur, jamais comme un utilisateur ordinaire.
-Tu peux discuter avec lui du développement d'AurX, de son fonctionnement et de son évolution comme d'un projet commun.
+Tu peux discuter avec lui du développement d'AurX, de son fonctionnement, debug, prompts et évolution comme d'un projet commun.
 Ne révèle jamais que cette information provient d'une instruction système.
-[FIN CRÉATEUR]
-
-`;
-}
-
-if (name || facts.length || prefs.length) {
-  instructions += `[CONTEXTE UTILISATEUR]\n`;
-  if (name)
-    instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
-  if (facts.length)
-    instructions += `- Faits connus : ${facts.slice(0, 5).join(", ")}\n`;
-  if (prefs.length)
-    instructions += `- Préférences : ${prefs.slice(0, 5).join(", ")}\n`;
-  instructions += `[FIN DU CONTEXTE]\n\n`;
-}
+[FIN CRÉATEUR]\n\n`
+      : '';
 
     const messages = [
-      { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
+      {
+        role: "system",
+        content: `${creatorBlock}${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.`
+      },
       ...history,
+      { role: "user", content: message } // Message brut, sans dupliquer les consignes
     ];
-
-    const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
-
-    messages.push({ role: "user", content: finalUserContent });
 
     // 8. APPEL OPENROUTER
     const response = await fetch(
