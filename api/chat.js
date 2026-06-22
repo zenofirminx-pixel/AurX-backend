@@ -149,16 +149,17 @@ export default async function handler(req, res) {
     }
 
     const now = Date.now();
-    const tenMinutesAgo = now - 10 * 60 * 1000;
+    const now = Date.now();
+const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
     // 3. SUPPRESSION DES ANCIENS MESSAGES (Nettoyage de l'historique de la conversation de + de 10 min)
     try {
-      const oldMessagesSnap = await messagesRef
-        .where("convId", "==", convId)
-        .where("timestamp", "<", tenMinutesAgo)
-        .get();
+        const oldMessagesSnap = await messagesRef
+  .where("convId", "==", convId)
+  .where("timestamp", "<", thirtyDaysAgo)
+  .get();
 
       if (!oldMessagesSnap.empty) {
         const batch = db.batch();
@@ -334,4 +335,3 @@ export default async function handler(req, res) {
     sendError(res, "Server error");
   }
 }
-
