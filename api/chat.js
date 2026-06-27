@@ -266,7 +266,7 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY_1}`,
           "HTTP-Referer": "https://aurx.vercel.app",
           "X-Title": "AurX",
         },
