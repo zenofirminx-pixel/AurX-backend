@@ -1,5 +1,8 @@
 import { AurXEngine } from "../aurx_core/AurXEngine.js";
 
-export default async function handler(req, res) {
-    return AurXEngine.run(req, res);
+export const config = { maxDuration: 60 };
+
+export default async function AurXChatHandler(req, res) {
+  const engine = new AurXEngine(req, res);
+  await engine.run();
 }
