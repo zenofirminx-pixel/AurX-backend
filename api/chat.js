@@ -7,7 +7,6 @@ import { randomUUID } from "crypto";
 
 export const config = { maxDuration: 60 };
 
-// ===== TON PROMPT ICI =====
 const BASE_PROMPT = `# COMMUNICATION STYLE
 Utilise un style naturel, fluide et agréable à lire.
 Reste direct, précis et pertinent.
@@ -60,7 +59,37 @@ Objectif :
 Faire ressentir une personnalité chaleureuse et intelligente, tout en gardant des réponses claires et utiles.
 AurX a été créé par un développeur congolais nommé Firmin.
 si l'user demande ton créateur réponds juste naturellement.`;
-// ===== FIN DU PROMPT =====
+
+// ===== FONCTION RECHERCHE WEB (TAVILY API) =====
+async function searchWeb(query) {
+  if (!process.env.TAVILY_API_KEY) {
+    console.warn("TAVILY_API_KEY manquante.");
+    return "";
+  }
+  try {
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: process.env.TAVILY_API_KEY,
+        query: query,
+        search_depth: "basic",
+        include_answer: false,
+        max_results: 3
+      }),
+    });
+    if (!res.ok) return "";
+    const data = await res.json();
+    
+    // Formater les résultats pour le modèle
+    return data.results
+      .map(r => `Titre: ${r.title}\nURL: ${r.url}\nContenu: ${r.content}\n---`)
+      .join("\n");
+  } catch (err) {
+    console.error("Erreur recherche Tavily:", err);
+    return "";
+  }
+}
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "https://aurx.vercel.app");
@@ -111,30 +140,21 @@ export default async function handler(req, res) {
 
     const cookies = parse(req.headers.cookie || "");
     let userId = null;
-    let isGuest = false;
 
-    // 1. VÉRIFICATION DE L'UTILISATEUR CONNECTÉ (Ex: Compte Google)
     if (cookies.aurx_session) {
       try {
-        const user = JSON.parse(
-          Buffer.from(cookies.aurx_session, "base64").toString()
-        );
-        // Utilise l'ID unique du compte Google s'il existe, sinon son email ou sid
+        const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
         userId = user.id || user.sid || user.email;
       } catch (err) {
         console.error("Erreur décodage session cookie :", err);
       }
     }
 
-    // 2. GESTION DE L'UTILISATEUR NON CONNECTÉ (Identifiant par appareil/navigateur)
     if (!userId) {
-      isGuest = true;
       if (cookies.aurx_guest_id) {
         userId = cookies.aurx_guest_id;
       } else {
-        // Génère un ID unique et anonyme pour ce nouvel appareil / utilisateur
         userId = `guest_${randomUUID()}`;
-        // On renvoie le cookie pour que cet appareil garde sa mémoire lors des prochains appels
         res.setHeader(
           "Set-Cookie",
           serialize("aurx_guest_id", userId, {
@@ -142,37 +162,31 @@ export default async function handler(req, res) {
             httpOnly: true,
             secure: true,
             sameSite: "none",
-            maxAge: 60 * 60 * 24 * 365, // Valable 1 an
+            maxAge: 60 * 60 * 24 * 365,
           })
         );
       }
     }
 
-    
     const now = Date.now();
-const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
-
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
     const messagesRef = db.collection("users").doc(userId).collection("messages");
 
-    // 3. SUPPRESSION DES ANCIENS MESSAGES (Nettoyage de l'historique de la conversation de + de 10 min)
     try {
-        const oldMessagesSnap = await messagesRef
-  .where("convId", "==", convId)
-  .where("timestamp", "<", thirtyDaysAgo)
-  .get();
+      const oldMessagesSnap = await messagesRef
+        .where("convId", "==", convId)
+        .where("timestamp", "<", thirtyDaysAgo)
+        .get();
 
       if (!oldMessagesSnap.empty) {
         const batch = db.batch();
-        oldMessagesSnap.docs.forEach((doc) => {
-          batch.delete(doc.ref);
-        });
+        oldMessagesSnap.docs.forEach((doc) => batch.delete(doc.ref));
         await batch.commit();
       }
     } catch (err) {
       console.error("Erreur nettoyage messages :", err);
     }
 
-    // 4. ENREGISTREMENT DU MESSAGE UTILISATEUR
     await messagesRef.add({
       role: "user",
       text: message,
@@ -180,7 +194,6 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       convId,
     });
 
-    // Extraction et sauvegarde de la mémoire propre à cet ID utilisateur unique
     try {
       const memories = extractMemory(message);
       if (Array.isArray(memories) && memories.length > 0) {
@@ -188,13 +201,12 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       }
     } catch {}
 
-    // 5. RÉCUPÉRATION DE L'HISTORIQUE DE CONVERSATION
+    // Lancement de la recherche web en parallèle pendant qu'on récupère l'historique de la DB
+    const searchPromise = searchWeb(message);
+
     let history = [];
     try {
-      const snap = await messagesRef
-        .where("convId", "==", convId)
-        .get();
-
+      const snap = await messagesRef.where("convId", "==", convId).get();
       history = snap.docs
         .map((d) => d.data())
         .sort((a, b) => a.timestamp - b.timestamp)
@@ -210,22 +222,15 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       ) {
         history.pop();
       }
-
       history = history.slice(-19);
     } catch {}
 
-    // 6. CHARGEMENT DE LA MÉMOIRE PROFONDE ISOLÉE DE L'UTILISATEUR
     let name = null;
     let facts = [];
     let prefs = [];
 
     try {
-      const memSnap = await db
-        .collection("users")
-        .doc(userId)
-        .collection("memory")
-        .get();
-
+      const memSnap = await db.collection("users").doc(userId).collection("memory").get();
       memSnap.forEach((doc) => {
         const d = doc.data();
         if (d.type === "identity" && d.key === "name") {
@@ -238,10 +243,12 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       });
     } catch {}
 
-    // 7. CONSTRUCTION DU PROMPT
-    const basePrompt = BASE_PROMPT;
+    // Attente des résultats de la recherche web
+    const searchResults = await searchPromise;
 
+    const basePrompt = BASE_PROMPT;
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
+    
     if (name || facts.length || prefs.length) {
       instructions += `[CONTEXTE UTILISATEUR]\n`;
       if (name) instructions += `- Nom de l'utilisateur : ${name} (Utilise son nom naturellement dans la conversation)\n`;
@@ -250,16 +257,18 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       instructions += `[FIN DU CONTEXTE]\n\n`;
     }
 
+    if (searchResults) {
+      instructions += `[RÉSULTATS DE LA RECHERCHE WEB (ANNÉE COURANTE 2026)]\n${searchResults}\n[FIN DES RÉSULTATS]\nUtilise ces données récentes pour répondre précisément de manière transparente sans mentionner explicitement que tu as fait une recherche sauf si nécessaire.\n\n`;
+    }
+
     const messages = [
       { role: "system", content: `${instructions}Reste strictement dans ton rôle d'assistant décrit ci-dessus.` },
       ...history,
     ];
 
     const finalUserContent = `[CONSIGNES SYSTÈME À RESPECTER ABSOLUMENT]\n${instructions}---\nMessage de l'utilisateur :\n${message}`;
-
     messages.push({ role: "user", content: finalUserContent });
 
-    // 8. APPEL OPENROUTER
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -285,7 +294,6 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
     let full = "";
     let buffer = "";
     let got = false;
@@ -300,14 +308,12 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
-
         const data = line.slice(6).trim();
         if (data === "[DONE]") continue;
 
         try {
           const json = JSON.parse(data);
           const content = json.choices?.[0]?.delta?.content;
-
           if (content) {
             got = true;
             full += content;
@@ -317,11 +323,8 @@ const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
       }
     }
 
-    if (!got) {
-      return sendError(res, "Empty response from AI");
-    }
+    if (!got) return sendError(res, "Empty response from AI");
 
-    // 9. ENREGISTREMENT DE LA RÉPONSE
     await messagesRef.add({
       role: "assistant",
       text: full,
