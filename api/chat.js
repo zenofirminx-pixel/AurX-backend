@@ -63,8 +63,8 @@ si l'user demande ton créateur réponds juste naturellement.`;
 
 // ===== FONCTION RECHERCHE WEB (TAVILY API) =====
 async function searchWeb(query) {
-  if (!process.env.TAVILY_API_KEY) {
-    console.warn("TAVILY_API_KEY manquante.");
+  if (!process.env.TAVILY) {
+    console.warn("TAVILY manquante.");
     return "";
   }
   try {
@@ -72,7 +72,7 @@ async function searchWeb(query) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        api_key: process.env.TAVILY_API_KEY,
+        api_key: process.env.TAVILY,
         query: query,
         search_depth: "basic",
         include_answer: false,
