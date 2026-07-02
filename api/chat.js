@@ -82,7 +82,6 @@ async function searchWeb(query) {
     if (!res.ok) return "";
     const data = await res.json();
     
-    // Formater les résultats pour le modèle
     return data.results
       .map(r => `Titre: ${r.title}\nURL: ${r.url}\nContenu: ${r.content}\n---`)
       .join("\n");
@@ -90,6 +89,18 @@ async function searchWeb(query) {
     console.error("Erreur recherche Tavily:", err);
     return "";
   }
+}
+
+// Fonction de détection d'intention de recherche web
+function shouldSearchWeb(message) {
+  const lowerMessage = message.toLowerCase();
+  // Liste de mots clés qui déclenchent la recherche
+  const searchKeywords = [
+    "recherche", "cherche", "trouve", "actu", "actualité", "météo", 
+    "maintenant", "en ce moment", "aujourd'hui", "2026", "nouvelle", 
+    "score", "match", "température", "qui est", "qu'est-ce qui se passe"
+  ];
+  return searchKeywords.some(keyword => lowerMessage.includes(keyword));
 }
 
 function setCors(res) {
@@ -202,8 +213,8 @@ export default async function handler(req, res) {
       }
     } catch {}
 
-    // Lancement de la recherche web en parallèle pendant qu'on récupère l'historique de la DB
-    const searchPromise = searchWeb(message);
+    // Lancement de la recherche web UNIQUEMENT si l'intention est détectée
+    const searchPromise = shouldSearchWeb(message) ? searchWeb(message) : Promise.resolve("");
 
     let history = [];
     try {
@@ -223,7 +234,8 @@ export default async function handler(req, res) {
       ) {
         history.pop();
       }
-      history = history.slice(-19);
+      // Augmenté à 50 messages pour un contexte beaucoup plus riche
+      history = history.slice(-50);
     } catch {}
 
     let name = null;
@@ -244,7 +256,7 @@ export default async function handler(req, res) {
       });
     } catch {}
 
-    // Attente des résultats de la recherche web
+    // Attente des résultats de la recherche web (si elle a été lancée)
     const searchResults = await searchPromise;
 
     const basePrompt = BASE_PROMPT;
